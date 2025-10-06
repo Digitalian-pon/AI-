@@ -1,0 +1,5 @@
+{
+  "name": "AI Music Video Maker",
+  "description": "Create an animated music video from your song and image using AI. This application, designed for artists and creators, brings your static images to life, synchronized with your music, ready for social media.",
+  "requestFramePermissions": []
+}
