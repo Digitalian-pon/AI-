@@ -1,3 +1,4 @@
+
 export enum AppStatus {
   IDLE,
   LOADING,
@@ -23,3 +24,5 @@ export interface LyricsGenerationResult {
   style: string;
   lyrics: string;
 }
+
+export type VideoModel = 'veo-3.1-fast-generate-preview' | 'veo-3.1-generate-preview';

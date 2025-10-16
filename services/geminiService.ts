@@ -1,5 +1,6 @@
+
 import { GoogleGenAI, Type } from "@google/genai";
-import { LyricsGenerationResult } from './types';
+import { LyricsGenerationResult, VideoModel } from './types';
 
 export const fileToBase64 = (file: File): Promise<string> => {
   return new Promise((resolve, reject) => {
@@ -181,43 +182,22 @@ ${lyrics}
   return response.text.trim();
 };
 
-
-export const generateMusicVideo = async (
-  prompt: string,
-  imageBase64: string,
-  imageMimeType: string
-): Promise<string> => {
-  if (!process.env.API_KEY) {
-    throw new Error("API_KEY environment variable not set.");
-  }
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-
-  // Start the video generation. This is an async operation.
-  let operation = await ai.models.generateVideos({
-    model: 'veo-2.0-generate-001',
-    prompt: prompt,
-    image: {
-      imageBytes: imageBase64,
-      mimeType: imageMimeType,
-    },
-    config: {
-      numberOfVideos: 1,
-    },
-  });
-
+// Private helper to poll for video generation results
+const pollForVideoResult = async (operation: any, ai: GoogleGenAI): Promise<string> => {
+  let currentOperation = operation;
   // Poll for the result.
-  while (!operation.done) {
+  while (!currentOperation.done) {
     // Wait for 10 seconds before checking the status again.
     await new Promise(resolve => setTimeout(resolve, 10000));
-    operation = await ai.operations.getVideosOperation({ operation: operation });
+    currentOperation = await ai.operations.getVideosOperation({ operation: currentOperation });
   }
 
   // Check for errors in the operation.
-  if (operation.error) {
-    throw new Error(`Video generation failed: ${operation.error.message}`);
+  if (currentOperation.error) {
+    throw new Error(`Video generation failed: ${currentOperation.error.message}`);
   }
 
-  const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
+  const downloadLink = currentOperation.response?.generatedVideos?.[0]?.video?.uri;
 
   if (!downloadLink) {
     throw new Error("Could not retrieve video download link from the API response.");
@@ -239,4 +219,68 @@ export const generateMusicVideo = async (
   const videoObjectUrl = URL.createObjectURL(videoBlob);
   
   return videoObjectUrl;
+};
+
+export const generateAnimationVideo = async (
+  prompt: string,
+  imageBase64: string,
+  imageMimeType: string,
+  modelName: VideoModel
+): Promise<string> => {
+  if (!process.env.API_KEY) {
+    throw new Error("API_KEY environment variable not set.");
+  }
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+
+  // Start the video generation. This is an async operation.
+  const operation = await ai.models.generateVideos({
+    model: modelName,
+    prompt: prompt,
+    image: {
+      imageBytes: imageBase64,
+      mimeType: imageMimeType,
+    },
+    config: {
+      numberOfVideos: 1,
+      resolution: '720p',
+      aspectRatio: '1:1',
+    },
+  });
+
+  return await pollForVideoResult(operation, ai);
+};
+
+export const generateLipSyncVideo = async (
+  prompt: string,
+  imageBase64: string,
+  imageMimeType: string,
+  audioFile: File, // Takes audio file to signify its purpose, though not used in API call
+  modelName: VideoModel
+): Promise<string> => {
+  if (!process.env.API_KEY) {
+    throw new Error("API_KEY environment variable not set.");
+  }
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+
+  // NOTE: The VEO API currently does not directly accept an audio file for lipsyncing.
+  // We are constructing a highly detailed prompt to instruct the model to generate
+  // realistic mouth movements that appear synchronized with a song.
+  const lipSyncPrompt = `${prompt}, The character is performing a song with passionate and expressive lip movements. The mouth shapes should realistically match the act of singing, with clear vowels and consonant articulations. The animation must be smooth and convincing, creating a strong illusion of being lip-synced to an audio track.`;
+
+  // Start the video generation. This is an async operation.
+  const operation = await ai.models.generateVideos({
+    model: modelName,
+    prompt: lipSyncPrompt,
+    image: {
+      imageBytes: imageBase64,
+      mimeType: imageMimeType,
+    },
+    config: {
+      numberOfVideos: 1,
+      resolution: '720p',
+      aspectRatio: '1:1',
+    },
+  });
+
+  return await pollForVideoResult(operation, ai);
 };
