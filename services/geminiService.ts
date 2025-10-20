@@ -1,5 +1,5 @@
 import { GoogleGenAI, Type } from "@google/genai";
-import { LyricsGenerationResult, Scene } from '../types';
+import { LyricsGenerationResult } from '../types';
 
 export type VideoModel = 'veo-3.1-fast-generate-preview' | 'veo-3.1-generate-preview';
 
@@ -82,7 +82,7 @@ export const generateScenePrompts = async (lyrics: string, style: string, langua
   const prompt = language === 'ja'
     ? `以下の歌詞と音楽スタイルを基に、ミュージックビデオのシーンを構成してください。歌詞をセクション（Verse 1, Chorusなど）ごとに分け、それぞれのセクションに最適な「画像生成プロンプト」と「アニメーションプロンプト」を生成してください。
 # 指示
-- 画像プロンプト: フォトリアルな3D CGアバターが中心。Unreal Engine 5のような高品質なスタイル。背景や感情も詳細に記述。必ず英語で生成してください。
+- 画像プロンプト: **シネマチック**でフォトリアルな3D CG。**魅力的な若い男性（イケメン）または女性（美女）のアバター**が中心。Unreal Engine 5のような高品質なスタイル。背景や感情も詳細に記述。必ず英語で生成してください。
 - アニメーションプロンプト: キャラクターが情熱的に歌う様子。口の動きや感情表現を、簡潔な日本語の文章で記述してください。
 - JSON配列形式で、解説や前置きなしで結果のみを返してください。
 # 入力
@@ -91,7 +91,7 @@ export const generateScenePrompts = async (lyrics: string, style: string, langua
 ${lyrics}`
     : `Based on the following lyrics and music style, please structure scenes for a music video. Divide the lyrics by section (e.g., Verse 1, Chorus) and generate the optimal "Image Generation Prompt" and "Animation Prompt" for each section.
 # Instructions
-- Image Generation Prompt: Focus on a photorealistic 3D CG avatar in a high-quality style like Unreal Engine 5. Describe the background and emotions in detail. Must be generated in English.
+- Image Generation Prompt: Focus on a **cinematic**, photorealistic 3D CG avatar. The character should be an **attractive young man (handsome) or woman (beautiful)**. Use a high-quality style like Unreal Engine 5. Describe the background and emotions in detail. Must be generated in English.
 - Animation Prompt: Describe the character singing passionately. Write a concise description of mouth movements and emotional expressions in English.
 - Return only the results in a JSON array format without any commentary or introduction.
 # Input
@@ -147,6 +147,7 @@ const pollForVideoResult = async (operation: any): Promise<string> => {
   let currentOperation = operation;
   while (!currentOperation.done) {
     await new Promise(resolve => setTimeout(resolve, 10000));
+    // Re-instantiate the client in each poll to ensure the latest API key from the dialog is used.
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     currentOperation = await ai.operations.getVideosOperation({ operation: currentOperation });
   }
@@ -154,7 +155,10 @@ const pollForVideoResult = async (operation: any): Promise<string> => {
   if (currentOperation.error) throw new Error(`Video generation failed: ${currentOperation.error.message}`);
   
   const downloadLink = currentOperation.response?.generatedVideos?.[0]?.video?.uri;
-  if (!downloadLink) throw new Error("Could not retrieve video download link.");
+  if (!downloadLink) {
+    console.error("Video generation operation completed, but no download link was found. Full response:", JSON.stringify(currentOperation, null, 2));
+    throw new Error("Could not retrieve video download link from the API response. The generation may have failed silently.");
+  }
   
   const fullUrl = `${downloadLink}&key=${process.env.API_KEY}`;
   const videoResponse = await fetch(fullUrl);
@@ -174,9 +178,9 @@ export const generateAnimationVideo = async (
   if (!process.env.API_KEY) throw new Error("API_KEY environment variable not set.");
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   
-  let finalPrompt = prompt;
+  let finalPrompt = `cinematic video, ${prompt}`;
   if (lipSync) {
-    finalPrompt = `${prompt}, The character is performing a song with passionate and expressive lip movements. The mouth shapes should realistically match the act of singing, with clear vowels and consonant articulations.`;
+    finalPrompt = `${finalPrompt}, The character is performing a song with passionate and expressive lip movements. The mouth shapes should realistically match the act of singing, with clear vowels and consonant articulations.`;
   }
 
   const operation = await ai.models.generateVideos({

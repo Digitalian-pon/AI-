@@ -1,4 +1,3 @@
-
 import React, { useState, useCallback, useEffect } from 'react';
 import { AppStatus, AppMode, GenerationStep, Scene } from './types';
 import { generateAnimationVideo, fileToBase64, generateLyrics, generateTheme, generateImage, generateScenePrompts } from './services/geminiService';
@@ -8,8 +7,7 @@ import FileUpload from './components/FileUpload';
 import Loader from './components/Loader';
 import VideoResult from './components/VideoResult';
 import LyricsDisplay from './components/LyricsDisplay';
-// FIX: Removed ChevronsRightIcon from import as it's not exported from './components/Icons' and is unused.
-import { SparklesIcon, AlertTriangleIcon, Wand2Icon, MusicIcon, FileImageIcon, FilmIcon, UploadCloudIcon, ClipboardCopyIcon, ExternalLinkIcon, KeyRoundIcon, ListVideoIcon, RotateCcwIcon } from './components/Icons';
+import { SparklesIcon, AlertTriangleIcon, Wand2Icon, MusicIcon, FileImageIcon, FilmIcon, UploadCloudIcon, ClipboardCopyIcon, ExternalLinkIcon, KeyRoundIcon, RotateCcwIcon } from './components/Icons';
 
 const cameraWorkOptions = {
   '': 'なし', 'slow zoom in': 'ズームイン', 'slow zoom out': 'ズームアウト',
@@ -50,6 +48,7 @@ const App: React.FC = () => {
 
   useEffect(() => {
     const checkApiKey = async () => {
+      // Give the aistudio object a moment to initialize
       for (let i = 0; i < 5; i++) {
         if (window.aistudio?.hasSelectedApiKey) {
           setIsKeySelected(await window.aistudio.hasSelectedApiKey());
@@ -126,14 +125,18 @@ const App: React.FC = () => {
       const parsed = parseLyrics(lyrics);
       const prompts = await generateScenePrompts(lyrics, style, language);
       
+      if (parsed.length !== prompts.length) {
+        console.warn(`Mismatch in scene count. Lyrics parser found ${parsed.length}, but AI generated ${prompts.length} prompts. Proceeding by index matching.`);
+      }
+
       const sceneData: Scene[] = parsed.map((section, index) => {
-        const promptData = prompts.find(p => p.section.toLowerCase().includes(section.header.toLowerCase().replace(':', '')));
+        const promptData = prompts[index]; // Match prompts to parsed sections by order.
         return {
           id: index,
-          sectionHeader: section.header,
+          sectionHeader: promptData?.section || section.header, // Prefer AI's section name if available
           sectionContent: section.content,
-          imagePrompt: promptData?.imagePrompt || '',
-          animationPrompt: promptData?.animationPrompt || '',
+          imagePrompt: promptData?.imagePrompt || '', // Fallback to empty if lengths mismatch
+          animationPrompt: promptData?.animationPrompt || '', // Fallback to empty if lengths mismatch
           status: 'idle',
         }
       });
@@ -175,6 +178,7 @@ const App: React.FC = () => {
         updateScene(scene.id, { generatedVideoUrl: videoUrl, status: 'completed' });
     } catch (err) {
         const message = getFriendlyErrorMessage(err);
+        if (message.includes('再度APIキーを選択してください')) setIsKeySelected(false);
         updateScene(scene.id, { status: 'error', errorMessage: message });
     }
   };
@@ -185,8 +189,12 @@ const App: React.FC = () => {
     
     setIsGeneratingClips(true);
     setError('');
-    const generationPromises = scenesToGenerate.map(scene => handleGenerateSingleClip(scene.id));
-    await Promise.all(generationPromises);
+
+    // Generate clips sequentially to avoid rate limiting
+    for (const scene of scenesToGenerate) {
+      await handleGenerateSingleClip(scene.id);
+    }
+    
     setIsGeneratingClips(false);
   };
 
@@ -228,13 +236,13 @@ const App: React.FC = () => {
   };
   
   const renderContent = () => {
-    if (!isKeySelected) return <SelectApiKeyScreen />;
+    if (!isKeySelected && mode !== AppMode.SELECT) return <SelectApiKeyScreen />;
     if (status === AppStatus.LOADING) return <Loader />;
     
     if (status === AppStatus.SUCCESS) {
         if(mode === AppMode.GENERATE) {
             const videoUrls = scenes.map(s => s.generatedVideoUrl).filter((url): url is string => !!url);
-            return <VideoResult videoUrls={videoUrls} audioUrl={audioObjectUrl} onReset={handleReset} />;
+            return <VideoResult videoUrls={videoUrls} audioUrl={audioObjectUrl} onReset={handleReset} title={generatedTitle} />;
         }
         if(generatedVideoUrl) return <VideoResult videoUrls={[generatedVideoUrl]} audioUrl={audioObjectUrl} onReset={handleReset} />;
     }
@@ -337,7 +345,7 @@ const App: React.FC = () => {
                     <textarea id="lyric-theme" value={lyricTheme} onChange={(e) => setLyricTheme(e.target.value)} placeholder="例：雨上がりの虹、未来への希望" rows={3} className="w-full bg-gray-700 border-gray-600 rounded-lg p-3 focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition mb-4"/>
                     {error && <ErrorMessage message={error} />}
                     <button onClick={handleGenerateLyrics} disabled={isGeneratingLyrics || !lyricTheme} className={`w-full flex items-center justify-center font-semibold py-2 px-4 rounded-lg transition-all ${!lyricTheme || isGeneratingLyrics ? 'bg-gray-600 cursor-not-allowed' : 'bg-purple-600 hover:bg-purple-700'}`}>
-                        {isGeneratingLyrics ? '生成中...' : <><SparklesIcon className="h-5 w-5 mr-2" />歌詞を生成する</>}
+                        {isGeneratingLyrics ? '生成中...' : <><SparklesIcon className="h-5 w-5 mr-2" />歌詞を生成し、制作へ進む</>}
                     </button>
                 </div>
             );
@@ -383,11 +391,15 @@ const App: React.FC = () => {
                         ) : error && !scenes.length ? (
                             <ErrorMessage message={error} />
                         ) : scenes.length > 0 && (
-                            <div className="space-y-4 mb-6">
+                            <div className="space-y-4">
                                 {scenes.map(scene => <SceneEditorCard key={scene.id} scene={scene} />)}
-                                <button onClick={handleGenerateAllClips} disabled={isGeneratingClips} className={`w-full flex items-center justify-center text-lg font-semibold py-3 px-6 rounded-lg transition-all duration-300 ${isGeneratingClips ? 'bg-gray-600 cursor-not-allowed' : 'bg-gradient-to-r from-purple-500 to-pink-600 hover:from-purple-600 hover:to-pink-700 shadow-lg'}`}>
-                                    <SparklesIcon className="h-6 w-6 mr-2" />{isGeneratingClips ? '生成中...' : '残りのクリップをすべて生成'}
-                                </button>
+                                <div className="pt-4 space-y-4">
+                                  <VideoModelSelector videoModel={videoModel} setVideoModel={setVideoModel} />
+                                  {renderLipSyncToggle()}
+                                  <button onClick={handleGenerateAllClips} disabled={isGeneratingClips} className={`w-full flex items-center justify-center text-lg font-semibold py-3 px-6 rounded-lg transition-all duration-300 ${isGeneratingClips ? 'bg-gray-600 cursor-not-allowed' : 'bg-gradient-to-r from-purple-500 to-pink-600 hover:from-purple-600 hover:to-pink-700 shadow-lg'}`}>
+                                      <SparklesIcon className="h-6 w-6 mr-2" />{isGeneratingClips ? '全シーン生成中...' : '残りのクリップをすべて生成'}
+                                  </button>
+                                </div>
                             </div>
                         )}
                     </div>
@@ -417,7 +429,8 @@ const App: React.FC = () => {
     );
   };
   
-  const SceneEditorCard = ({ scene }: { scene: Scene }) => {
+  // FIX: Explicitly type SceneEditorCard as a React.FC to correctly handle the 'key' prop.
+  const SceneEditorCard: React.FC<{ scene: Scene }> = ({ scene }) => {
     const onGenerate = () => handleGenerateSingleClip(scene.id);
     const thumbnail = scene.generatedImageBase64 ? `data:image/png;base64,${scene.generatedImageBase64}` : null;
     
@@ -468,7 +481,7 @@ const App: React.FC = () => {
               </div>
             </div>
         </div>
-        {scene.status === 'error' && <p className="text-xs text-red-400 -mt-2" title={scene.errorMessage}><span className="font-semibold">エラー:</span> {scene.errorMessage}</p>}
+        {scene.status === 'error' && <p className="text-xs text-red-400 mt-2" title={scene.errorMessage}><span className="font-semibold">エラー:</span> {scene.errorMessage}</p>}
       </div>
     );
   };
