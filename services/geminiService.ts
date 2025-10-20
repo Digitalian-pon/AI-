@@ -1,6 +1,7 @@
-
 import { GoogleGenAI, Type } from "@google/genai";
-import { LyricsGenerationResult, VideoModel } from './types';
+import { LyricsGenerationResult, Scene } from '../types';
+
+export type VideoModel = 'veo-3.1-fast-generate-preview' | 'veo-3.1-generate-preview';
 
 export const fileToBase64 = (file: File): Promise<string> => {
   return new Promise((resolve, reject) => {
@@ -8,7 +9,6 @@ export const fileToBase64 = (file: File): Promise<string> => {
     reader.readAsDataURL(file);
     reader.onload = () => {
       const result = reader.result as string;
-      // Remove the data URL prefix (e.g., "data:image/png;base64,")
       const base64 = result.split(',')[1];
       resolve(base64);
     };
@@ -17,42 +17,33 @@ export const fileToBase64 = (file: File): Promise<string> => {
 };
 
 export const generateTheme = async (language: 'ja' | 'en'): Promise<string> => {
-  if (!process.env.API_KEY) {
-    throw new Error("API_KEY environment variable not set.");
-  }
+  if (!process.env.API_KEY) throw new Error("API_KEY environment variable not set.");
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   const prompt = language === 'ja'
     ? `日本のポップソングのテーマになりそうな、創造的で感情に訴えかけるようなアイデアを1つだけ、短いフレーズで提案してください。`
     : `Please suggest a creative and emotional theme idea for a pop song, in one short phrase.`;
 
-  const response = await ai.models.generateContent({
-    model: 'gemini-2.5-flash',
-    contents: prompt,
-  });
-  return response.text.trim().replace(/^"|"$/g, ''); // Remove quotes if any
+  const response = await ai.models.generateContent({ model: 'gemini-2.5-flash', contents: prompt });
+  return response.text.trim().replace(/^"|"$/g, '');
 };
 
 
 export const generateLyrics = async (theme: string, language: 'ja' | 'en'): Promise<LyricsGenerationResult> => {
-  if (!process.env.API_KEY) {
-    throw new Error("API_KEY environment variable not set.");
-  }
+  if (!process.env.API_KEY) throw new Error("API_KEY environment variable not set.");
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-
   const prompt = language === 'ja'
-    ? `以下のテーマに沿って、日本のポップソングを制作してください。
+    ? `以下のテーマを基に、独創的な日本の楽曲を制作してください。
 - 曲の長さは約3分程度を想定してください。
 - 歌詞は2番までのフルコーラス（Verse 1, Pre-Chorus, Chorus, Verse 2, Pre-Chorus, Chorus, Bridge, Outroなど）で作成してください。
+- 音楽スタイルは、入力されたテーマの雰囲気や感情に合わせて、AIが最も適切だと判断したものを提案してください（例：バラード、ロック、EDM、R&B、チルポップなど、具体的なスタイルを提示）。
 - AIによる解説や前置きは一切含めず、指定されたJSON形式のデータのみを返してください。
-
 テーマ: ${theme}`
-    : `Please create a pop song based on the following theme.
+    : `Based on the following theme, please create an original song.
 - The song should be approximately 3 minutes long.
-- The lyrics should be a full song with up to 2 verses (e.g., Verse 1, Pre-Chorus, Chorus, Verse 2, Pre-Chorus, Chorus, Bridge, Outro).
+- The lyrics should be a full song with up to 2 verses (e.g., Verse 1, Pre-Chorus, Chorus, Bridge, Outro).
+- For the musical style, please suggest what the AI deems most appropriate to match the mood and emotion of the input theme (e.g., suggest a specific style like Ballad, Rock, EDM, R&B, Chillpop, etc.).
 - Do not include any commentary or introduction. Only return the data in the specified JSON format.
-
 Theme: ${theme}`;
-
 
   const response = await ai.models.generateContent({
     model: 'gemini-2.5-flash',
@@ -62,225 +53,142 @@ Theme: ${theme}`;
       responseSchema: {
         type: Type.OBJECT,
         properties: {
-          title: {
-            type: Type.STRING,
-            description: language === 'ja' ? "曲のタイトル" : "The title of the song"
-          },
-          style: {
-            type: Type.STRING,
-            description: language === 'ja' ? "音楽のスタイル（例：アップテンポなJ-POP、エモーショナルなロックバラードなど）" : "The musical style (e.g., Up-tempo J-POP, Emotional rock ballad)"
-          },
-          lyrics: {
-            type: Type.STRING,
-            description: language === 'ja' ? "生成された歌詞。Verse, Pre-Chorus, Chorus, Bridge, Outroなどのセクション名を含んだフルコーラスの歌詞。" : "The generated lyrics. Full chorus lyrics including section names like Verse, Pre-Chorus, Chorus, Bridge, Outro."
-          }
+          title: { type: Type.STRING, description: language === 'ja' ? "曲のタイトル" : "The title of the song" },
+          style: { type: Type.STRING, description: language === 'ja' ? "音楽のスタイル" : "The musical style" },
+          lyrics: { type: Type.STRING, description: language === 'ja' ? "生成された歌詞" : "The generated lyrics." }
         },
         required: ["title", "style", "lyrics"]
       },
     },
   });
-
   const jsonString = response.text.trim();
   try {
-    const result: LyricsGenerationResult = JSON.parse(jsonString);
-    return result;
+    return JSON.parse(jsonString);
   } catch (e) {
     console.error("Failed to parse JSON from Gemini:", jsonString);
     throw new Error("AIからの応答を解析できませんでした。");
   }
 };
 
-export const generateImagePrompt = async (lyrics: string, style: string, language: 'ja' | 'en'): Promise<string> => {
-  if (!process.env.API_KEY) {
-    throw new Error("API_KEY environment variable not set.");
-  }
+interface ScenePromptGenerationResult {
+  section: string;
+  imagePrompt: string;
+  animationPrompt: string;
+}
+
+export const generateScenePrompts = async (lyrics: string, style: string, language: 'ja' | 'en'): Promise<ScenePromptGenerationResult[]> => {
+  if (!process.env.API_KEY) throw new Error("API_KEY environment variable not set.");
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   const prompt = language === 'ja'
-    ? `以下の歌詞と音楽スタイルに最適な、ミュージックビデオのワンシーンのようなフォトリアルな3D CGアバターの高品質な画像を生成するための、非常に詳細な英語のプロンプトを考えてください。**アニメや漫画のスタイルは絶対に避け、実写に近いフォトリアルな品質を最優先してください。**プロンプトには、以下の要素を含めてください:
-- **キャラクター**: 主人公の見た目（**リアルな肌の質感、髪の毛一本一本まで緻密な描写**）、感情豊かな表情、歌っているようなダイナミックなポーズ。
-- **背景**: 楽曲の世界観を表現する、印象的で美しい背景。
-- **構図とライティング**: 感情を強調するシネマティックなカメラアングルと、ドラマチックな光の表現（例：逆光、スポットライト、レンズフレア）。
-- **スタイル**: **Unreal Engine 5やOctane Renderでレンダリングされたような、最高品質の3D CGアート。hyper-realistic, photorealistic, 8k, cinematic lighting, ultra-detailed。**
-- **出力形式**: 最終的なプロンプトは英語で、単語やフレーズをカンマで区切った形式にしてください。
----
+    ? `以下の歌詞と音楽スタイルを基に、ミュージックビデオのシーンを構成してください。歌詞をセクション（Verse 1, Chorusなど）ごとに分け、それぞれのセクションに最適な「画像生成プロンプト」と「アニメーションプロンプト」を生成してください。
+# 指示
+- 画像プロンプト: フォトリアルな3D CGアバターが中心。Unreal Engine 5のような高品質なスタイル。背景や感情も詳細に記述。必ず英語で生成してください。
+- アニメーションプロンプト: キャラクターが情熱的に歌う様子。口の動きや感情表現を、簡潔な日本語の文章で記述してください。
+- JSON配列形式で、解説や前置きなしで結果のみを返してください。
+# 入力
 音楽スタイル: ${style}
 歌詞:
-${lyrics}
----
-`
-    : `Based on the following lyrics and music style, create a very detailed English prompt for generating a high-quality, photorealistic 3D CG avatar image that looks like a scene from a music video. **Strictly avoid any anime or cartoon styles; prioritize photorealistic quality similar to a live-action film.** The prompt must include the following elements:
-- **Character**: The protagonist's appearance (**with realistic skin texture and meticulously detailed hair**), an emotive facial expression, and a dynamic pose as if they are singing.
-- **Background**: A striking and beautiful background that expresses the world of the song.
-- **Composition & Lighting**: A cinematic camera angle and dramatic lighting to emphasize emotion (e.g., backlighting, spotlight, lens flare).
-- **Style**: **Top-quality 3D CG art, as if rendered in Unreal Engine 5 or Octane Render. Keywords: hyper-realistic, photorealistic, 8k, cinematic lighting, ultra-detailed.**
-- **Output Format**: The final prompt should be in English, with words and phrases separated by commas.
----
+${lyrics}`
+    : `Based on the following lyrics and music style, please structure scenes for a music video. Divide the lyrics by section (e.g., Verse 1, Chorus) and generate the optimal "Image Generation Prompt" and "Animation Prompt" for each section.
+# Instructions
+- Image Generation Prompt: Focus on a photorealistic 3D CG avatar in a high-quality style like Unreal Engine 5. Describe the background and emotions in detail. Must be generated in English.
+- Animation Prompt: Describe the character singing passionately. Write a concise description of mouth movements and emotional expressions in English.
+- Return only the results in a JSON array format without any commentary or introduction.
+# Input
 Music Style: ${style}
 Lyrics:
-${lyrics}
----
-`;
+${lyrics}`;
 
   const response = await ai.models.generateContent({
-    model: 'gemini-2.5-flash',
+    model: 'gemini-2.5-pro', // Use a more powerful model for better scene interpretation
     contents: prompt,
+    config: {
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: Type.ARRAY,
+        items: {
+          type: Type.OBJECT,
+          properties: {
+            section: { type: Type.STRING, description: "The lyric section header (e.g., Verse 1, Chorus)" },
+            imagePrompt: { type: Type.STRING, description: "Detailed English prompt for image generation." },
+            animationPrompt: { type: Type.STRING, description: "Concise prompt for animation." }
+          },
+          required: ["section", "imagePrompt", "animationPrompt"]
+        }
+      }
+    }
   });
-  return response.text.trim();
+  const jsonString = response.text.trim();
+  try {
+    return JSON.parse(jsonString);
+  } catch (e) {
+    console.error("Failed to parse JSON from Gemini for scene prompts:", jsonString);
+    throw new Error("シーンプロンプトの解析に失敗しました。");
+  }
 };
 
-export const generateImage = async (prompt: string, numberOfImages: number = 1): Promise<string[]> => {
-    if (!process.env.API_KEY) {
-        throw new Error("API_KEY environment variable not set.");
-    }
+
+export const generateImage = async (prompt: string): Promise<string> => {
+    if (!process.env.API_KEY) throw new Error("API_KEY environment variable not set.");
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     const response = await ai.models.generateImages({
         model: 'imagen-4.0-generate-001',
         prompt: prompt,
         config: {
-            numberOfImages: numberOfImages,
+            numberOfImages: 1,
             outputMimeType: 'image/png',
-            aspectRatio: '1:1', // Changed to 1:1 for better avatar framing
+            aspectRatio: '16:9',
         },
     });
-
-    return response.generatedImages.map(img => img.image.imageBytes);
+    return response.generatedImages[0].image.imageBytes;
 };
 
-export const generateAnimationPrompt = async (lyrics: string, style: string, language: 'ja' | 'en'): Promise<string> => {
-  if (!process.env.API_KEY) {
-    throw new Error("API_KEY environment variable not set.");
-  }
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-  const prompt = language === 'ja'
-    ? `以下の歌詞と音楽スタイルに最適な、キャラクターが情熱的に歌っている様子を表現する短いアニメーションのプロンプトを考えてください。プロンプトには、以下の要素を含めてください:
-- **キャラクターの感情**: 歌詞の内容に合わせた表情の変化（喜び、悲しみ、力強さなど）。
-- **口の動き**: 歌っていることが明確にわかるような、自然な口の開閉。
-- **体の動き**: リズムに合わせた体の揺れや、感情を表現するジェスチャー。
-- **出力形式**: 最終的なプロンプトは、簡潔な1〜2文の日本語の文章にしてください。AIによる解説や前置きは一切含めないでください。
----
-音楽スタイル: ${style}
-歌詞:
-${lyrics}
----
-`
-    : `Based on the following lyrics and music style, create a short animation prompt describing a character singing passionately. The prompt must include the following elements:
-- **Character's Emotion**: Facial expression changes that match the lyrics (joy, sadness, power, etc.).
-- **Mouth Movement**: Natural opening and closing of the mouth to clearly show they are singing.
-- **Body Movement**: Body swaying to the rhythm or gestures that express emotion.
-- **Output Format**: The final prompt should be a concise 1-2 sentence description in English. Do not include any commentary or introduction.
----
-Music Style: ${style}
-Lyrics:
-${lyrics}
----
-`;
-
-  const response = await ai.models.generateContent({
-    model: 'gemini-2.5-flash',
-    contents: prompt,
-  });
-  return response.text.trim();
-};
-
-// Private helper to poll for video generation results
-const pollForVideoResult = async (operation: any, ai: GoogleGenAI): Promise<string> => {
+const pollForVideoResult = async (operation: any): Promise<string> => {
   let currentOperation = operation;
-  // Poll for the result.
   while (!currentOperation.done) {
-    // Wait for 10 seconds before checking the status again.
     await new Promise(resolve => setTimeout(resolve, 10000));
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     currentOperation = await ai.operations.getVideosOperation({ operation: currentOperation });
   }
 
-  // Check for errors in the operation.
-  if (currentOperation.error) {
-    throw new Error(`Video generation failed: ${currentOperation.error.message}`);
-  }
-
+  if (currentOperation.error) throw new Error(`Video generation failed: ${currentOperation.error.message}`);
+  
   const downloadLink = currentOperation.response?.generatedVideos?.[0]?.video?.uri;
-
-  if (!downloadLink) {
-    throw new Error("Could not retrieve video download link from the API response.");
-  }
-
-  // The API key must be appended to the URI to download the video.
+  if (!downloadLink) throw new Error("Could not retrieve video download link.");
+  
   const fullUrl = `${downloadLink}&key=${process.env.API_KEY}`;
-
-  // Fetch the video data from the returned URI.
   const videoResponse = await fetch(fullUrl);
-  if (!videoResponse.ok) {
-    throw new Error(`Failed to fetch video data: ${videoResponse.statusText}`);
-  }
-
-  // Convert the response body to a Blob.
+  if (!videoResponse.ok) throw new Error(`Failed to fetch video data: ${videoResponse.statusText}`);
+  
   const videoBlob = await videoResponse.blob();
-  
-  // Create an object URL from the Blob, which can be used in the <video> src attribute.
-  const videoObjectUrl = URL.createObjectURL(videoBlob);
-  
-  return videoObjectUrl;
+  return URL.createObjectURL(videoBlob);
 };
 
 export const generateAnimationVideo = async (
   prompt: string,
   imageBase64: string,
   imageMimeType: string,
-  modelName: VideoModel
+  modelName: VideoModel,
+  lipSync: boolean,
 ): Promise<string> => {
-  if (!process.env.API_KEY) {
-    throw new Error("API_KEY environment variable not set.");
-  }
+  if (!process.env.API_KEY) throw new Error("API_KEY environment variable not set.");
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  
+  let finalPrompt = prompt;
+  if (lipSync) {
+    finalPrompt = `${prompt}, The character is performing a song with passionate and expressive lip movements. The mouth shapes should realistically match the act of singing, with clear vowels and consonant articulations.`;
+  }
 
-  // Start the video generation. This is an async operation.
   const operation = await ai.models.generateVideos({
     model: modelName,
-    prompt: prompt,
-    image: {
-      imageBytes: imageBase64,
-      mimeType: imageMimeType,
-    },
+    prompt: finalPrompt,
+    image: { imageBytes: imageBase64, mimeType: imageMimeType },
     config: {
       numberOfVideos: 1,
       resolution: '720p',
-      aspectRatio: '1:1',
+      aspectRatio: '16:9',
     },
   });
 
-  return await pollForVideoResult(operation, ai);
-};
-
-export const generateLipSyncVideo = async (
-  prompt: string,
-  imageBase64: string,
-  imageMimeType: string,
-  audioFile: File, // Takes audio file to signify its purpose, though not used in API call
-  modelName: VideoModel
-): Promise<string> => {
-  if (!process.env.API_KEY) {
-    throw new Error("API_KEY environment variable not set.");
-  }
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-
-  // NOTE: The VEO API currently does not directly accept an audio file for lipsyncing.
-  // We are constructing a highly detailed prompt to instruct the model to generate
-  // realistic mouth movements that appear synchronized with a song.
-  const lipSyncPrompt = `${prompt}, The character is performing a song with passionate and expressive lip movements. The mouth shapes should realistically match the act of singing, with clear vowels and consonant articulations. The animation must be smooth and convincing, creating a strong illusion of being lip-synced to an audio track.`;
-
-  // Start the video generation. This is an async operation.
-  const operation = await ai.models.generateVideos({
-    model: modelName,
-    prompt: lipSyncPrompt,
-    image: {
-      imageBytes: imageBase64,
-      mimeType: imageMimeType,
-    },
-    config: {
-      numberOfVideos: 1,
-      resolution: '720p',
-      aspectRatio: '1:1',
-    },
-  });
-
-  return await pollForVideoResult(operation, ai);
+  return await pollForVideoResult(operation);
 };

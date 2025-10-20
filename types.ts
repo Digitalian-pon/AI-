@@ -1,3 +1,4 @@
+import { VideoModel } from './services/geminiService';
 
 export enum AppStatus {
   IDLE,
@@ -14,9 +15,7 @@ export enum AppMode {
 
 export enum GenerationStep {
   LYRICS,
-  MUSIC,
-  IMAGE,
-  ANIMATION,
+  PRODUCTION,
 }
 
 export interface LyricsGenerationResult {
@@ -25,4 +24,14 @@ export interface LyricsGenerationResult {
   lyrics: string;
 }
 
-export type VideoModel = 'veo-3.1-fast-generate-preview' | 'veo-3.1-generate-preview';
+export interface Scene {
+  id: number;
+  sectionHeader: string;
+  sectionContent: string;
+  imagePrompt: string;
+  animationPrompt: string;
+  status: 'idle' | 'image_generating' | 'video_generating' | 'completed' | 'error';
+  errorMessage?: string;
+  generatedImageBase64?: string;
+  generatedVideoUrl?: string;
+}

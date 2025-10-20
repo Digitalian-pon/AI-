@@ -5,31 +5,34 @@ interface LyricsDisplayProps {
 }
 
 const LyricsDisplay: React.FC<LyricsDisplayProps> = ({ lyrics }) => {
-  const parseLyrics = (text: string) => {
+  const parseLyrics = (text: string): { header: string; content: string }[] => {
     if (!text) return [];
 
-    // Split by section headers (like Verse 1:, Chorus:, etc.).
-    // The regex with a capturing group intersperses delimiters and content.
-    const parts = text.split(/(Verse \d:|Pre-Chorus:|Chorus:|Bridge:|Outro:)/i);
-    
     const sections: { header: string; content: string }[] = [];
+    // Regex to match common lyric section headers (e.g., "Verse 1:", "[Chorus]:", "Outro:")
+    const headerRegex = /(\[?[A-Za-z]+(?:\s\d+)?\]?:)/;
     
-    // The first part might be content before any header.
-    if (parts[0] && parts[0].trim() !== '') {
+    // Split the text by headers, keeping the headers as part of the result array by using a capturing group.
+    const parts = text.split(headerRegex);
+  
+    if (parts.length <= 1) {
+      const trimmedText = text.trim();
+      return trimmedText ? [{ header: '', content: trimmedText }] : [];
+    }
+    
+    if (parts[0] && parts[0].trim()) {
       sections.push({ header: '', content: parts[0].trim() });
     }
-
-    // Process the rest of the parts in pairs (header, content)
+  
     for (let i = 1; i < parts.length; i += 2) {
-      if (parts[i] && parts[i+1]) {
-        sections.push({
-          header: parts[i].trim().replace(':', ''),
-          content: parts[i + 1].trim(),
-        });
+      const header = (parts[i] || '').replace(':', '').trim();
+      const content = (parts[i+1] || '').trim();
+      if (header || content) {
+          sections.push({ header, content });
       }
     }
     
-    return sections;
+    return sections.filter(s => s.header || s.content);
   };
 
   const parsedLyrics = parseLyrics(lyrics);
