@@ -1,5 +1,5 @@
 import { GoogleGenAI, Type } from "@google/genai";
-import { LyricsGenerationResult } from '../types';
+import { LyricsGenerationResult, Scene } from '../types';
 
 export type VideoModel = 'veo-3.1-fast-generate-preview' | 'veo-3.1-generate-preview';
 
@@ -20,8 +20,8 @@ export const generateTheme = async (language: 'ja' | 'en'): Promise<string> => {
   if (!process.env.API_KEY) throw new Error("API_KEY environment variable not set.");
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   const prompt = language === 'ja'
-    ? `日本のポップソングのテーマになりそうな、創造的で感情に訴えかけるようなアイデアを1つだけ、短いフレーズで提案してください。`
-    : `Please suggest a creative and emotional theme idea for a pop song, in one short phrase.`;
+    ? `人々に勇気や感動、未来への希望を与えるような、独創的で感情豊かな楽曲テーマを1つだけ、短いフレーズで提案してください。ポップス、ロック、バラード、エレクトロなど、様々なジャンルを想定してください。`
+    : `Please suggest a single creative, emotional, and inspiring song theme in a short phrase that gives people courage and hope for the future. Consider various genres such as pop, rock, ballad, and electronic music.`;
 
   const response = await ai.models.generateContent({ model: 'gemini-2.5-flash', contents: prompt });
   return response.text.trim().replace(/^"|"$/g, '');
@@ -32,16 +32,18 @@ export const generateLyrics = async (theme: string, language: 'ja' | 'en'): Prom
   if (!process.env.API_KEY) throw new Error("API_KEY environment variable not set.");
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   const prompt = language === 'ja'
-    ? `以下のテーマを基に、独創的な日本の楽曲を制作してください。
+    ? `以下のテーマを基に、人々に勇気や感動、未来への希望を与えるような独創的な日本の楽曲を制作してください。
 - 曲の長さは約3分程度を想定してください。
 - 歌詞は2番までのフルコーラス（Verse 1, Pre-Chorus, Chorus, Verse 2, Pre-Chorus, Chorus, Bridge, Outroなど）で作成してください。
-- 音楽スタイルは、入力されたテーマの雰囲気や感情に合わせて、AIが最も適切だと判断したものを提案してください（例：バラード、ロック、EDM、R&B、チルポップなど、具体的なスタイルを提示）。
+- 各セクション（Verse, Chorusなど）の間には、必ず1行の空行を入れてください。
+- 音楽スタイルは、入力されたテーマの雰囲気や感情を最大限に表現できる、独創的で具体的なスタイルを提案してください。J-POPに限定せず、ロック、エレクトロ、アンビエント、オーケストラ、R&Bなど、幅広い選択肢から最適なものを選択してください。
 - AIによる解説や前置きは一切含めず、指定されたJSON形式のデータのみを返してください。
 テーマ: ${theme}`
-    : `Based on the following theme, please create an original song.
+    : `Based on the following theme, please create an original song that gives people courage, inspiration, and hope for the future.
 - The song should be approximately 3 minutes long.
 - The lyrics should be a full song with up to 2 verses (e.g., Verse 1, Pre-Chorus, Chorus, Bridge, Outro).
-- For the musical style, please suggest what the AI deems most appropriate to match the mood and emotion of the input theme (e.g., suggest a specific style like Ballad, Rock, EDM, R&B, Chillpop, etc.).
+- Please insert a blank line between each section (e.g., Verse, Chorus).
+- For the musical style, suggest a creative and specific style that can best express the mood and emotion of the theme. Do not limit to Pop, but select the most suitable one from a wide range of options such as rock, electro, ambient, orchestral, R&B, etc.
 - Do not include any commentary or introduction. Only return the data in the specified JSON format.
 Theme: ${theme}`;
 
@@ -80,20 +82,39 @@ export const generateScenePrompts = async (lyrics: string, style: string, langua
   if (!process.env.API_KEY) throw new Error("API_KEY environment variable not set.");
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   const prompt = language === 'ja'
-    ? `以下の歌詞と音楽スタイルを基に、ミュージックビデオのシーンを構成してください。歌詞をセクション（Verse 1, Chorusなど）ごとに分け、それぞれのセクションに最適な「画像生成プロンプト」と「アニメーションプロンプト」を生成してください。
+    ? `以下の日本語の歌詞と音楽スタイルを基に、ミュージックビデオの各シーンに対応する英語のプロンプトを生成してください。
+# 重要事項
+生成される「imagePrompt」と「animationPrompt」は、後続の画像生成APIおよびビデオ生成APIに直接入力として使用されます。これらのAPIは英語のプロンプトのみを受け付けます。そのため、以下の指示に厳密に従ってください。
+
 # 指示
-- 画像プロンプト: **シネマチック**でフォトリアルな3D CG。**魅力的な若い男性（イケメン）または女性（美女）のアバター**が中心。Unreal Engine 5のような高品質なスタイル。背景や感情も詳細に記述。必ず英語で生成してください。
-- アニメーションプロンプト: キャラクターが情熱的に歌う様子。口の動きや感情表現を、簡潔な日本語の文章で記述してください。
-- JSON配列形式で、解説や前置きなしで結果のみを返してください。
+1.  **プロンプト言語**: 「imagePrompt」と「animationPrompt」の**値は、必ず全て英語で生成してください**。日本語やその他の言語が混入しないようにしてください。
+2.  **画像プロンプト (imagePrompt)**: 
+    -   歌詞の内容と音楽スタイルを解釈し、シーンに合った詳細なビジュアルを記述します。
+    -   アートスタイル（例: photorealistic, anime, cinematic）、キャラクターの見た目や感情、背景、ライティングなどを具体的に含めてください。
+3.  **アニメーションプロンプト (animationPrompt)**:
+    -   歌詞の感情に合わせたキャラクターの動きや表情の変化を記述します。
+    -   例: "singing passionately with eyes closed", "a single tear rolling down her cheek", "looking up at the sky with a hopeful expression"。
+    -   簡潔かつ具体的な動詞を使って記述してください。
+4.  **出力形式**: JSON配列形式で、解説や前置きなしで結果のみを返してください。各要素は、セクション名、imagePrompt、animationPromptを含むオブジェクトです。
+
 # 入力
 音楽スタイル: ${style}
 歌詞:
 ${lyrics}`
-    : `Based on the following lyrics and music style, please structure scenes for a music video. Divide the lyrics by section (e.g., Verse 1, Chorus) and generate the optimal "Image Generation Prompt" and "Animation Prompt" for each section.
+    : `Based on the following lyrics and music style, generate corresponding English prompts for each scene of a music video.
+# IMPORTANT
+The generated "imagePrompt" and "animationPrompt" will be used as direct inputs for subsequent image and video generation APIs, which only accept English prompts. Please adhere strictly to the following instructions.
+
 # Instructions
-- Image Generation Prompt: Focus on a **cinematic**, photorealistic 3D CG avatar. The character should be an **attractive young man (handsome) or woman (beautiful)**. Use a high-quality style like Unreal Engine 5. Describe the background and emotions in detail. Must be generated in English.
-- Animation Prompt: Describe the character singing passionately. Write a concise description of mouth movements and emotional expressions in English.
-- Return only the results in a JSON array format without any commentary or introduction.
+1.  **Prompt Language**: The values for "imagePrompt" and "animationPrompt" **must be generated entirely in English**.
+2.  **Image Generation Prompt (imagePrompt)**:
+    -   Interpret the lyrics and music style to describe a detailed visual for the scene.
+    -   Include specifics like art style (e.g., photorealistic, anime, cinematic), character appearance and emotion, background, and lighting.
+3.  **Animation Prompt (animationPrompt)**:
+    -   Describe the character's movements and facial expression changes corresponding to the lyrics' emotion.
+    -   Use concise and descriptive verbs. Examples: "singing passionately with eyes closed", "a single tear rolling down her cheek", "looking up at the sky with a hopeful expression".
+4.  **Output Format**: Return only the results in a JSON array format without any commentary or introduction. Each element should be an object containing the section name, imagePrompt, and animationPrompt.
+
 # Input
 Music Style: ${style}
 Lyrics:
@@ -111,7 +132,7 @@ ${lyrics}`;
           properties: {
             section: { type: Type.STRING, description: "The lyric section header (e.g., Verse 1, Chorus)" },
             imagePrompt: { type: Type.STRING, description: "Detailed English prompt for image generation." },
-            animationPrompt: { type: Type.STRING, description: "Concise prompt for animation." }
+            animationPrompt: { type: Type.STRING, description: "Concise English prompt for animation." }
           },
           required: ["section", "imagePrompt", "animationPrompt"]
         }
@@ -147,7 +168,6 @@ const pollForVideoResult = async (operation: any): Promise<string> => {
   let currentOperation = operation;
   while (!currentOperation.done) {
     await new Promise(resolve => setTimeout(resolve, 10000));
-    // Re-instantiate the client in each poll to ensure the latest API key from the dialog is used.
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     currentOperation = await ai.operations.getVideosOperation({ operation: currentOperation });
   }
@@ -155,10 +175,7 @@ const pollForVideoResult = async (operation: any): Promise<string> => {
   if (currentOperation.error) throw new Error(`Video generation failed: ${currentOperation.error.message}`);
   
   const downloadLink = currentOperation.response?.generatedVideos?.[0]?.video?.uri;
-  if (!downloadLink) {
-    console.error("Video generation operation completed, but no download link was found. Full response:", JSON.stringify(currentOperation, null, 2));
-    throw new Error("Could not retrieve video download link from the API response. The generation may have failed silently.");
-  }
+  if (!downloadLink) throw new Error("Could not retrieve video download link.");
   
   const fullUrl = `${downloadLink}&key=${process.env.API_KEY}`;
   const videoResponse = await fetch(fullUrl);
@@ -178,7 +195,13 @@ export const generateAnimationVideo = async (
   if (!process.env.API_KEY) throw new Error("API_KEY environment variable not set.");
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   
-  let finalPrompt = `cinematic video, ${prompt}`;
+  let finalPrompt = prompt.trim();
+  
+  // Veo API requires a non-empty prompt. Provide a default if the generated one is empty.
+  if (!finalPrompt) {
+    finalPrompt = "subtle movement, gentle breathing, slight blinking";
+  }
+
   if (lipSync) {
     finalPrompt = `${finalPrompt}, The character is performing a song with passionate and expressive lip movements. The mouth shapes should realistically match the act of singing, with clear vowels and consonant articulations.`;
   }

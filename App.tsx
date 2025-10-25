@@ -1,4 +1,5 @@
-import React, { useState, useCallback, useEffect } from 'react';
+
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { AppStatus, AppMode, GenerationStep, Scene } from './types';
 import { generateAnimationVideo, fileToBase64, generateLyrics, generateTheme, generateImage, generateScenePrompts } from './services/geminiService';
 import { VideoModel } from './services/geminiService';
@@ -7,7 +8,7 @@ import FileUpload from './components/FileUpload';
 import Loader from './components/Loader';
 import VideoResult from './components/VideoResult';
 import LyricsDisplay from './components/LyricsDisplay';
-import { SparklesIcon, AlertTriangleIcon, Wand2Icon, MusicIcon, FileImageIcon, FilmIcon, UploadCloudIcon, ClipboardCopyIcon, ExternalLinkIcon, KeyRoundIcon, RotateCcwIcon } from './components/Icons';
+import { SparklesIcon, AlertTriangleIcon, Wand2Icon, MusicIcon, FileImageIcon, FilmIcon, UploadCloudIcon, ClipboardCopyIcon, ExternalLinkIcon, KeyRoundIcon, ListVideoIcon, RotateCcwIcon, ClockIcon, StopCircleIcon, SettingsIcon, XIcon } from './components/Icons';
 
 const cameraWorkOptions = {
   '': 'なし', 'slow zoom in': 'ズームイン', 'slow zoom out': 'ズームアウト',
@@ -16,11 +17,246 @@ const cameraWorkOptions = {
 };
 const effectOptions = { 'sparkling lights': 'キラキラ光る', 'neon glow': 'ネオン', 'confetti falling': '紙吹雪', 'petals blowing in the wind': '風に舞う花びら' };
 
+// This script contains the entire logic for our background worker.
+const workerScript = `
+// In-worker script starts here
+// IMPORTANT: This script runs in a separate context (a Web Worker).
+// It cannot access variables or functions from the main App component directly.
+// Communication happens through postMessage.
+
+// The import path is taken from the main app's import map.
+// This works because we create the worker with { type: 'module' }.
+import { GoogleGenAI } from "https://aistudiocdn.com/@google/genai@^1.22.0";
+
+// --- START: Duplicated types and functions from the main app ---
+// We duplicate these here so the worker is self-contained.
+
+let ai; // AI instance will be created when API key is received.
+
+const pollForVideoResult = async (operation, apiKey) => {
+  let currentOperation = operation;
+  while (!currentOperation.done) {
+    await new Promise(resolve => setTimeout(resolve, 10000));
+    const pollAi = new GoogleGenAI({ apiKey });
+    currentOperation = await pollAi.operations.getVideosOperation({ operation: currentOperation });
+  }
+
+  if (currentOperation.error) throw new Error(\`Video generation failed: \${currentOperation.error.message}\`);
+  
+  const downloadLink = currentOperation.response?.generatedVideos?.[0]?.video?.uri;
+  if (!downloadLink) throw new Error("Could not retrieve video download link.");
+  
+  const fullUrl = \`\${downloadLink}&key=\${apiKey}\`;
+  const videoResponse = await fetch(fullUrl);
+  if (!videoResponse.ok) throw new Error(\`Failed to fetch video data: \${videoResponse.statusText}\`);
+  
+  const videoBlob = await videoResponse.blob();
+  return URL.createObjectURL(videoBlob);
+};
+
+const generateImage = async (prompt, apiKey) => {
+    if (!apiKey) throw new Error("API_KEY not provided to worker.");
+    ai = ai || new GoogleGenAI({ apiKey });
+    const response = await ai.models.generateImages({
+        model: 'imagen-4.0-generate-001',
+        prompt: prompt,
+        config: {
+            numberOfImages: 1,
+            outputMimeType: 'image/png',
+            aspectRatio: '16:9',
+        },
+    });
+    return response.generatedImages[0].image.imageBytes;
+};
+
+const generateAnimationVideo = async (prompt, imageBase64, imageMimeType, modelName, lipSync, apiKey) => {
+  if (!apiKey) throw new Error("API_KEY not provided to worker.");
+  ai = ai || new GoogleGenAI({ apiKey });
+  
+  let finalPrompt = prompt.trim();
+  if (!finalPrompt) {
+    finalPrompt = "subtle movement, gentle breathing, slight blinking";
+  }
+
+  if (lipSync) {
+    finalPrompt = \`\${finalPrompt}, The character is performing a song with passionate and expressive lip movements. The mouth shapes should realistically match the act of singing, with clear vowels and consonant articulations.\`;
+  }
+
+  const operation = await ai.models.generateVideos({
+    model: modelName,
+    prompt: finalPrompt,
+    image: { imageBytes: imageBase64, mimeType: imageMimeType },
+    config: {
+      numberOfVideos: 1,
+      resolution: '720p',
+      aspectRatio: '16:9',
+    },
+  });
+
+  return await pollForVideoResult(operation, apiKey);
+};
+
+const getFriendlyErrorMessage = (err) => {
+    const message = err instanceof Error ? err.message.toLowerCase() : 'unknown error';
+    if (message.includes('500') || message.includes('internal') || message.includes('server error')) {
+      return 'ビデオ生成サービスで一時的な内部エラーが発生しました。しばらくしてからもう一度お試しいただくか、プロンプトを少し変更してみてください。';
+    }
+    if (message.includes('requested entity was not found')) return 'APIキーが見つかりませんでした。再度APIキーを選択してください。';
+    if (message.includes('quota') || message.includes('resource_exhausted')) return 'APIの利用上限に達したようです。Google AI Studioで支払い設定を確認してください。';
+    if (message.includes('api_key') && (message.includes('invalid') || message.includes('not found'))) return 'APIキーが無効です。有効なAPIキーか確認してください。';
+    if (message.includes('fetch')) return 'ネットワークエラーが発生しました。接続を確認してください。';
+    return err instanceof Error ? err.message : '不明なエラーが発生しました。';
+};
+// --- END: Duplicated types and functions ---
+
+let isAborted = false;
+
+// Main message handler for the worker
+self.onmessage = async (event) => {
+  const { type, payload } = event.data;
+  
+  if (type === 'stop') {
+    isAborted = true;
+    return;
+  }
+
+  if (type === 'generate-one') {
+    const { scene, apiKey, videoModel, lipSync } = payload;
+    try {
+        self.postMessage({ type: 'image_generating', payload: { sceneId: scene.id } });
+        const imageBase64 = await generateImage(scene.imagePrompt, apiKey);
+
+        self.postMessage({ type: 'video_generating', payload: { sceneId: scene.id, imageBase64 } });
+        const videoUrl = await generateAnimationVideo(scene.animationPrompt, imageBase64, 'image/png', videoModel, lipSync, apiKey);
+        
+        self.postMessage({ type: 'completed', payload: { sceneId: scene.id, videoUrl } });
+    } catch(err) {
+        const message = getFriendlyErrorMessage(err);
+        self.postMessage({ type: 'error', payload: { sceneId: scene.id, message } });
+    }
+  }
+
+  if (type === 'generate-all') {
+    isAborted = false;
+    const { scenes, apiKey, videoModel, lipSync, delay } = payload;
+    
+    for (const [index, scene] of scenes.entries()) {
+      if (isAborted) {
+        self.postMessage({ type: 'stopped' });
+        break;
+      }
+      
+      self.postMessage({ type: 'progress', payload: { message: \`クリップ \${index + 1} / \${scenes.length} を生成中: 「\${scene.sectionHeader}」\` } });
+      
+      try {
+        self.postMessage({ type: 'image_generating', payload: { sceneId: scene.id } });
+        const imageBase64 = await generateImage(scene.imagePrompt, apiKey);
+
+        if (isAborted) { self.postMessage({ type: 'stopped' }); break; }
+
+        self.postMessage({ type: 'video_generating', payload: { sceneId: scene.id, imageBase64 } });
+        const videoUrl = await generateAnimationVideo(scene.animationPrompt, imageBase64, 'image/png', videoModel, lipSync, apiKey);
+        
+        if (isAborted) { self.postMessage({ type: 'stopped' }); break; }
+
+        self.postMessage({ type: 'completed', payload: { sceneId: scene.id, videoUrl } });
+      } catch (err) {
+        const message = getFriendlyErrorMessage(err);
+        self.postMessage({ type: 'error', payload: { sceneId: scene.id, message } });
+      }
+      
+      // Handle delay between generations
+      if (index < scenes.length - 1 && !isAborted) {
+        self.postMessage({ type: 'progress', payload: { message: '次の生成まで待機中...' } });
+        const delayInSeconds = delay * 60;
+        for (let i = delayInSeconds; i > 0; i--) {
+          if (isAborted) break;
+          self.postMessage({ type: 'countdown', payload: { seconds: i } });
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+        if (isAborted) {
+          self.postMessage({ type: 'stopped' });
+          break;
+        }
+        self.postMessage({ type: 'countdown', payload: { seconds: 0 } });
+      }
+    }
+
+    if (!isAborted) {
+      self.postMessage({ type: 'all_complete' });
+    }
+  }
+};
+`;
+
+// SceneEditorCard component moved outside of the App component to prevent re-creation on every render.
+const SceneEditorCard: React.FC<{
+  scene: Scene;
+  isGeneratingClips: boolean;
+  onGenerateClip: (sceneId: number) => void;
+  onUpdateScene: (id: number, updates: Partial<Scene>) => void;
+}> = ({ scene, isGeneratingClips, onGenerateClip, onUpdateScene }) => {
+  const onGenerate = () => onGenerateClip(scene.id);
+  const thumbnail = scene.generatedImageBase64 ? `data:image/png;base64,${scene.generatedImageBase64}` : null;
+  
+  const isGenerating = ['image_generating', 'video_generating'].includes(scene.status);
+  const isDisabled = isGeneratingClips || isGenerating;
+
+  const renderStatusAndAction = () => {
+    switch (scene.status) {
+      case 'idle':
+        return <button onClick={onGenerate} disabled={isDisabled} className="flex items-center gap-2 px-3 py-1.5 text-sm font-semibold bg-purple-600 rounded-md hover:bg-purple-700 transition-colors disabled:bg-gray-500 disabled:cursor-not-allowed"><SparklesIcon className="w-4 h-4" /> 生成</button>;
+      case 'image_generating':
+      case 'video_generating':
+        return <div className="flex items-center gap-2 text-sm font-medium text-purple-300 px-3 py-1.5"><div className="w-4 h-4 border-2 border-purple-400 border-t-transparent rounded-full animate-spin"></div><span>{scene.status === 'image_generating' ? '画像生成中' : 'ビデオ生成中'}</span></div>;
+      case 'completed':
+        return <button onClick={onGenerate} disabled={isDisabled} className="flex items-center gap-2 px-3 py-1.5 text-sm font-semibold bg-gray-600 rounded-md hover:bg-gray-500 transition-colors disabled:bg-gray-500 disabled:cursor-not-allowed"><RotateCcwIcon className="w-4 h-4" /> 再生成</button>;
+      case 'error':
+        return <button onClick={onGenerate} disabled={isDisabled} className="flex items-center gap-2 px-3 py-1.5 text-sm font-semibold bg-red-600 rounded-md hover:bg-red-700 transition-colors disabled:bg-gray-500 disabled:cursor-not-allowed"><RotateCcwIcon className="w-4 h-4" /> 再試行</button>;
+    }
+  };
+
+  return (
+    <div className="bg-gray-700/50 p-4 rounded-lg border border-gray-600 space-y-4">
+      <div className="flex items-start justify-between gap-4">
+        <div className="flex-grow">
+            <h4 className="font-bold text-purple-300">{scene.sectionHeader}</h4>
+            <p className="text-xs text-gray-400 mt-1 whitespace-pre-wrap">{scene.sectionContent}</p>
+        </div>
+        <div className="flex-shrink-0">{renderStatusAndAction()}</div>
+      </div>
+      <div className="flex flex-col sm:flex-row items-stretch gap-4">
+          <div className="w-full sm:w-32 h-20 bg-black/50 rounded-md flex-shrink-0 flex items-center justify-center overflow-hidden border border-gray-600">
+            {scene.status === 'completed' && scene.generatedVideoUrl ? (
+              <video src={scene.generatedVideoUrl} className="w-full h-full object-cover" muted loop autoPlay playsInline />
+            ) : thumbnail ? (
+              <img src={thumbnail} alt="Generated scene" className="w-full h-full object-cover" />
+            ) : (
+              <FileImageIcon className="w-8 h-8 text-gray-500" />
+            )}
+          </div>
+          <div className="flex-grow grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+                <label className="block text-xs font-semibold text-gray-300 mb-1">画像プロンプト (英語)</label>
+                <textarea value={scene.imagePrompt} onChange={(e) => onUpdateScene(scene.id, { imagePrompt: e.target.value })} rows={4} disabled={isDisabled} className="w-full text-sm bg-gray-800 border-gray-600 rounded-lg p-2 focus:ring-1 focus:ring-purple-500 focus:border-purple-500 transition disabled:bg-gray-700" />
+            </div>
+            <div>
+                <label className="block text-xs font-semibold text-gray-300 mb-1">アニメーションプロンプト</label>
+                <textarea value={scene.animationPrompt} onChange={(e) => onUpdateScene(scene.id, { animationPrompt: e.target.value })} rows={4} disabled={isDisabled} className="w-full text-sm bg-gray-800 border-gray-600 rounded-lg p-2 focus:ring-1 focus:ring-purple-500 focus:border-purple-500 transition disabled:bg-gray-700" />
+            </div>
+          </div>
+      </div>
+      {scene.status === 'error' && <p className="text-xs text-red-400 -mt-2" title={scene.errorMessage}><span className="font-semibold">エラー:</span> {scene.errorMessage}</p>}
+    </div>
+  );
+};
+
 const App: React.FC = () => {
   const [status, setStatus] = useState<AppStatus>(AppStatus.IDLE);
   const [error, setError] = useState<string>('');
   const [mode, setMode] = useState<AppMode>(AppMode.SELECT);
   const [isKeySelected, setIsKeySelected] = useState<boolean>(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
 
   const [audioFile, setAudioFile] = useState<File | null>(null);
   const [imageFile, setImageFile] = useState<File | null>(null);
@@ -45,10 +281,75 @@ const App: React.FC = () => {
   const [scenes, setScenes] = useState<Scene[]>([]);
   const [isGeneratingPrompts, setIsGeneratingPrompts] = useState(false);
   const [isGeneratingClips, setIsGeneratingClips] = useState(false);
+  const [generationDelay, setGenerationDelay] = useState<number>(1); // in minutes
+  const [countdown, setCountdown] = useState<number>(0);
+  const [generationStatusMessage, setGenerationStatusMessage] = useState('');
+  
+  const workerRef = useRef<Worker | null>(null);
+
+  useEffect(() => {
+    // Initialize the worker
+    const blob = new Blob([workerScript], { type: 'application/javascript' });
+    const workerUrl = URL.createObjectURL(blob);
+    const worker = new Worker(workerUrl, { type: 'module' });
+    workerRef.current = worker;
+
+    // Message handler from worker
+    worker.onmessage = (event: MessageEvent) => {
+        const { type, payload } = event.data;
+
+        switch (type) {
+            case 'image_generating':
+                updateScene(payload.sceneId, { status: 'image_generating' });
+                break;
+            case 'video_generating':
+                updateScene(payload.sceneId, { generatedImageBase64: payload.imageBase64, status: 'video_generating' });
+                break;
+            case 'completed':
+                updateScene(payload.sceneId, { generatedVideoUrl: payload.videoUrl, status: 'completed' });
+                break;
+            case 'error':
+                updateScene(payload.sceneId, { status: 'error', errorMessage: payload.message });
+                if (payload.message && payload.message.includes('APIキー')) {
+                    setIsKeySelected(false);
+                }
+                break;
+            case 'progress':
+                setGenerationStatusMessage(payload.message);
+                break;
+            case 'countdown':
+                setCountdown(payload.seconds);
+                if (payload.seconds > 0) {
+                    setGenerationStatusMessage('次の生成まで待機中...');
+                }
+                break;
+            case 'all_complete':
+                setIsGeneratingClips(false);
+                setGenerationStatusMessage('すべてのクリップが生成されました！');
+                setCountdown(0);
+                break;
+            case 'stopped':
+                setIsGeneratingClips(false);
+                setGenerationStatusMessage('生成が中止されました。');
+                setCountdown(0);
+                setScenes(prev => prev.map(s =>
+                    ['image_generating', 'video_generating'].includes(s.status)
+                    ? { ...s, status: 'idle' }
+                    : s
+                ));
+                break;
+        }
+    };
+
+    // Cleanup on component unmount
+    return () => {
+        worker.terminate();
+        URL.revokeObjectURL(workerUrl);
+    };
+  }, []); // Empty array ensures this runs only once on mount
 
   useEffect(() => {
     const checkApiKey = async () => {
-      // Give the aistudio object a moment to initialize
       for (let i = 0; i < 5; i++) {
         if (window.aistudio?.hasSelectedApiKey) {
           setIsKeySelected(await window.aistudio.hasSelectedApiKey());
@@ -74,6 +375,9 @@ const App: React.FC = () => {
 
   const getFriendlyErrorMessage = (err: unknown): string => {
     const message = err instanceof Error ? err.message.toLowerCase() : 'unknown error';
+    if (message.includes('500') || message.includes('internal') || message.includes('server error')) {
+      return 'ビデオ生成サービスで一時的な内部エラーが発生しました。しばらくしてからもう一度お試しいただくか、プロンプトを少し変更してみてください。';
+    }
     if (message.includes('requested entity was not found')) return 'APIキーが見つかりませんでした。再度APIキーを選択してください。';
     if (message.includes('quota') || message.includes('resource_exhausted')) return 'APIの利用上限に達したようです。Google AI Studioで支払い設定を確認してください。';
     if (message.includes('api_key') && (message.includes('invalid') || message.includes('not found'))) return 'APIキーが無効です。有効なAPIキーか確認してください。';
@@ -102,7 +406,7 @@ const App: React.FC = () => {
     } catch (err) {
       console.error(err);
       const friendlyError = getFriendlyErrorMessage(err);
-      if (friendlyError.includes('再度APIキーを選択してください')) setIsKeySelected(false);
+      if (friendlyError.includes('APIキー')) setIsKeySelected(false);
       setError(friendlyError);
       setStatus(AppStatus.ERROR);
     }
@@ -125,18 +429,30 @@ const App: React.FC = () => {
       const parsed = parseLyrics(lyrics);
       const prompts = await generateScenePrompts(lyrics, style, language);
       
-      if (parsed.length !== prompts.length) {
-        console.warn(`Mismatch in scene count. Lyrics parser found ${parsed.length}, but AI generated ${prompts.length} prompts. Proceeding by index matching.`);
-      }
+      const availablePrompts = [...prompts]; // Create a mutable copy to avoid reusing prompts
 
       const sceneData: Scene[] = parsed.map((section, index) => {
-        const promptData = prompts[index]; // Match prompts to parsed sections by order.
+        const cleanedHeader = section.header.toLowerCase().replace(/[\[\]():]/g, '').trim();
+        
+        // Find the best match from available prompts
+        const bestMatchIndex = availablePrompts.findIndex(p => {
+          const cleanedApiSection = p.section.toLowerCase().replace(/[\[\]():]/g, '').trim();
+          // Prioritize exact match, then partial match in either direction
+          return cleanedHeader === cleanedApiSection || cleanedHeader.includes(cleanedApiSection) || cleanedApiSection.includes(cleanedHeader);
+        });
+
+        let promptData;
+        if (bestMatchIndex !== -1) {
+          // If a match is found, use it and remove it from the available prompts
+          promptData = availablePrompts.splice(bestMatchIndex, 1)[0];
+        }
+
         return {
           id: index,
-          sectionHeader: promptData?.section || section.header, // Prefer AI's section name if available
+          sectionHeader: section.header,
           sectionContent: section.content,
-          imagePrompt: promptData?.imagePrompt || '', // Fallback to empty if lengths mismatch
-          animationPrompt: promptData?.animationPrompt || '', // Fallback to empty if lengths mismatch
+          imagePrompt: promptData?.imagePrompt || '',
+          animationPrompt: promptData?.animationPrompt || '',
           status: 'idle',
         }
       });
@@ -163,39 +479,50 @@ const App: React.FC = () => {
     finally { setIsGeneratingLyrics(false); }
   };
 
-  const handleGenerateSingleClip = async (sceneId: number) => {
+  const handleGenerateSingleClip = (sceneId: number) => {
     const scene = scenes.find(s => s.id === sceneId);
-    if (!scene) return;
+    if (!scene || !workerRef.current) return;
 
     updateScene(scene.id, { errorMessage: undefined });
-
-    try {
-        updateScene(scene.id, { status: 'image_generating' });
-        const imageBase64 = await generateImage(scene.imagePrompt);
-        updateScene(scene.id, { generatedImageBase64: imageBase64, status: 'video_generating' });
-        
-        const videoUrl = await generateAnimationVideo(scene.animationPrompt, imageBase64, 'image/png', videoModel, lipSync);
-        updateScene(scene.id, { generatedVideoUrl: videoUrl, status: 'completed' });
-    } catch (err) {
-        const message = getFriendlyErrorMessage(err);
-        if (message.includes('再度APIキーを選択してください')) setIsKeySelected(false);
-        updateScene(scene.id, { status: 'error', errorMessage: message });
-    }
+    setGenerationStatusMessage(`「${scene.sectionHeader}」の生成を開始...`);
+    updateScene(scene.id, { status: 'image_generating' });
+    
+    workerRef.current.postMessage({
+        type: 'generate-one',
+        payload: {
+            scene,
+            apiKey: process.env.API_KEY, // The main thread has access to this
+            videoModel,
+            lipSync
+        }
+    });
   };
   
-  const handleGenerateAllClips = async () => {
+  const handleStopGeneration = () => {
+    if (workerRef.current) {
+        workerRef.current.postMessage({ type: 'stop' });
+    }
+    setGenerationStatusMessage('生成を中止しています...');
+  };
+  
+  const handleGenerateAllClips = () => {
     const scenesToGenerate = scenes.filter(s => s.status === 'idle' || s.status === 'error');
-    if (scenesToGenerate.length === 0) return;
+    if (scenesToGenerate.length === 0 || !workerRef.current) return;
     
     setIsGeneratingClips(true);
     setError('');
+    setGenerationStatusMessage('');
 
-    // Generate clips sequentially to avoid rate limiting
-    for (const scene of scenesToGenerate) {
-      await handleGenerateSingleClip(scene.id);
-    }
-    
-    setIsGeneratingClips(false);
+    workerRef.current.postMessage({
+        type: 'generate-all',
+        payload: {
+            scenes: scenesToGenerate,
+            apiKey: process.env.API_KEY,
+            videoModel,
+            lipSync,
+            delay: generationDelay,
+        }
+    });
   };
 
   const handleReset = () => {
@@ -236,15 +563,14 @@ const App: React.FC = () => {
   };
   
   const renderContent = () => {
-    if (!isKeySelected && mode !== AppMode.SELECT) return <SelectApiKeyScreen />;
+    if (!isKeySelected) return <SelectApiKeyScreen />;
     if (status === AppStatus.LOADING) return <Loader />;
     
     if (status === AppStatus.SUCCESS) {
         if(mode === AppMode.GENERATE) {
-            const videoUrls = scenes.map(s => s.generatedVideoUrl).filter((url): url is string => !!url);
-            return <VideoResult videoUrls={videoUrls} audioUrl={audioObjectUrl} onReset={handleReset} title={generatedTitle} />;
+            return <VideoResult scenes={scenes} audioUrl={audioObjectUrl} onReset={handleReset} generatedTitle={generatedTitle} />;
         }
-        if(generatedVideoUrl) return <VideoResult videoUrls={[generatedVideoUrl]} audioUrl={audioObjectUrl} onReset={handleReset} />;
+        if(generatedVideoUrl) return <VideoResult scenes={[]} videoUrls={[generatedVideoUrl]} audioUrl={audioObjectUrl} onReset={handleReset} generatedTitle="Generated Video" />;
     }
 
     switch (mode) {
@@ -345,7 +671,7 @@ const App: React.FC = () => {
                     <textarea id="lyric-theme" value={lyricTheme} onChange={(e) => setLyricTheme(e.target.value)} placeholder="例：雨上がりの虹、未来への希望" rows={3} className="w-full bg-gray-700 border-gray-600 rounded-lg p-3 focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition mb-4"/>
                     {error && <ErrorMessage message={error} />}
                     <button onClick={handleGenerateLyrics} disabled={isGeneratingLyrics || !lyricTheme} className={`w-full flex items-center justify-center font-semibold py-2 px-4 rounded-lg transition-all ${!lyricTheme || isGeneratingLyrics ? 'bg-gray-600 cursor-not-allowed' : 'bg-purple-600 hover:bg-purple-700'}`}>
-                        {isGeneratingLyrics ? '生成中...' : <><SparklesIcon className="h-5 w-5 mr-2" />歌詞を生成し、制作へ進む</>}
+                        {isGeneratingLyrics ? '生成中...' : <><SparklesIcon className="h-5 w-5 mr-2" />歌詞を生成する</>}
                     </button>
                 </div>
             );
@@ -391,14 +717,51 @@ const App: React.FC = () => {
                         ) : error && !scenes.length ? (
                             <ErrorMessage message={error} />
                         ) : scenes.length > 0 && (
-                            <div className="space-y-4">
-                                {scenes.map(scene => <SceneEditorCard key={scene.id} scene={scene} />)}
-                                <div className="pt-4 space-y-4">
-                                  <VideoModelSelector videoModel={videoModel} setVideoModel={setVideoModel} />
-                                  {renderLipSyncToggle()}
-                                  <button onClick={handleGenerateAllClips} disabled={isGeneratingClips} className={`w-full flex items-center justify-center text-lg font-semibold py-3 px-6 rounded-lg transition-all duration-300 ${isGeneratingClips ? 'bg-gray-600 cursor-not-allowed' : 'bg-gradient-to-r from-purple-500 to-pink-600 hover:from-purple-600 hover:to-pink-700 shadow-lg'}`}>
-                                      <SparklesIcon className="h-6 w-6 mr-2" />{isGeneratingClips ? '全シーン生成中...' : '残りのクリップをすべて生成'}
-                                  </button>
+                            <div className="space-y-4 mb-6">
+                                {scenes.map(scene => <SceneEditorCard 
+                                    key={scene.id} 
+                                    scene={scene}
+                                    isGeneratingClips={isGeneratingClips}
+                                    onGenerateClip={handleGenerateSingleClip}
+                                    onUpdateScene={updateScene}
+                                />)}
+                                
+                                <div className="bg-gray-900/50 p-4 rounded-lg border border-gray-700 space-y-4">
+                                    <div>
+                                        <label htmlFor="generation-delay" className="flex items-center text-sm font-medium text-gray-300 mb-2">
+                                            <ClockIcon className="w-5 h-5 mr-2 text-purple-400" />
+                                            生成間隔（分）
+                                        </label>
+                                        <input
+                                            id="generation-delay"
+                                            type="number"
+                                            value={generationDelay}
+                                            onChange={(e) => setGenerationDelay(Math.max(0, parseInt(e.target.value, 10)))}
+                                            min="0"
+                                            disabled={isGeneratingClips}
+                                            className="w-full bg-gray-700 border-gray-600 rounded-lg p-2 focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition disabled:bg-gray-800 disabled:cursor-not-allowed"
+                                        />
+                                        <p className="text-xs text-gray-500 mt-2">
+                                            無料枠のAPI制限を避けるため、各ビデオ生成の間に遅延を設定します。1分以上を推奨します。
+                                        </p>
+                                    </div>
+                                    {isGeneratingClips ? (
+                                      <button onClick={handleStopGeneration} className="w-full flex items-center justify-center text-lg font-semibold py-3 px-6 rounded-lg transition-all duration-300 bg-red-600 hover:bg-red-700 shadow-lg">
+                                        <StopCircleIcon className="h-6 w-6 mr-2" />
+                                        生成を中止
+                                      </button>
+                                    ) : (
+                                      <button onClick={handleGenerateAllClips} disabled={scenes.filter(s => s.status !== 'completed').length === 0} className={`w-full flex items-center justify-center text-lg font-semibold py-3 px-6 rounded-lg transition-all duration-300 ${scenes.filter(s => s.status !== 'completed').length === 0 ? 'bg-gray-600 cursor-not-allowed' : 'bg-gradient-to-r from-purple-500 to-pink-600 hover:from-purple-600 hover:to-pink-700 shadow-lg'}`}>
+                                        <SparklesIcon className="h-6 w-6 mr-2" />
+                                        {`残り${scenes.filter(s => s.status !== 'completed').length}件をまとめて生成`}
+                                      </button>
+                                    )}
+                                    {(isGeneratingClips || generationStatusMessage) && (
+                                        <div className="text-center text-sm text-purple-300 pt-2">
+                                            <p>{generationStatusMessage}</p>
+                                            {countdown > 0 && <p className="font-mono text-lg">{Math.floor(countdown / 60)}:{(countdown % 60).toString().padStart(2, '0')}</p>}
+                                        </div>
+                                    )}
                                 </div>
                             </div>
                         )}
@@ -429,63 +792,6 @@ const App: React.FC = () => {
     );
   };
   
-  // FIX: Explicitly type SceneEditorCard as a React.FC to correctly handle the 'key' prop.
-  const SceneEditorCard: React.FC<{ scene: Scene }> = ({ scene }) => {
-    const onGenerate = () => handleGenerateSingleClip(scene.id);
-    const thumbnail = scene.generatedImageBase64 ? `data:image/png;base64,${scene.generatedImageBase64}` : null;
-    
-    const isGenerating = ['image_generating', 'video_generating'].includes(scene.status);
-    const isDisabled = isGeneratingClips || isGenerating;
-  
-    const renderStatusAndAction = () => {
-      switch (scene.status) {
-        case 'idle':
-          return <button onClick={onGenerate} disabled={isDisabled} className="flex items-center gap-2 px-3 py-1.5 text-sm font-semibold bg-purple-600 rounded-md hover:bg-purple-700 transition-colors disabled:bg-gray-500 disabled:cursor-not-allowed"><SparklesIcon className="w-4 h-4" /> 生成</button>;
-        case 'image_generating':
-        case 'video_generating':
-          return <div className="flex items-center gap-2 text-sm font-medium text-purple-300 px-3 py-1.5"><div className="w-4 h-4 border-2 border-purple-400 border-t-transparent rounded-full animate-spin"></div><span>{scene.status === 'image_generating' ? '画像生成中' : 'ビデオ生成中'}</span></div>;
-        case 'completed':
-          return <button onClick={onGenerate} disabled={isDisabled} className="flex items-center gap-2 px-3 py-1.5 text-sm font-semibold bg-gray-600 rounded-md hover:bg-gray-500 transition-colors disabled:bg-gray-500 disabled:cursor-not-allowed"><RotateCcwIcon className="w-4 h-4" /> 再生成</button>;
-        case 'error':
-          return <button onClick={onGenerate} disabled={isDisabled} className="flex items-center gap-2 px-3 py-1.5 text-sm font-semibold bg-red-600 rounded-md hover:bg-red-700 transition-colors disabled:bg-gray-500 disabled:cursor-not-allowed"><RotateCcwIcon className="w-4 h-4" /> 再試行</button>;
-      }
-    };
-  
-    return (
-      <div className="bg-gray-700/50 p-4 rounded-lg border border-gray-600 space-y-4">
-        <div className="flex items-start justify-between gap-4">
-          <div className="flex-grow">
-              <h4 className="font-bold text-purple-300">{scene.sectionHeader}</h4>
-              <p className="text-xs text-gray-400 mt-1 whitespace-pre-wrap">{scene.sectionContent}</p>
-          </div>
-          <div className="flex-shrink-0">{renderStatusAndAction()}</div>
-        </div>
-        <div className="flex flex-col sm:flex-row items-stretch gap-4">
-            <div className="w-full sm:w-32 h-20 bg-black/50 rounded-md flex-shrink-0 flex items-center justify-center overflow-hidden border border-gray-600">
-              {scene.status === 'completed' && scene.generatedVideoUrl ? (
-                <video src={scene.generatedVideoUrl} className="w-full h-full object-cover" muted loop autoPlay playsInline />
-              ) : thumbnail ? (
-                <img src={thumbnail} alt="Generated scene" className="w-full h-full object-cover" />
-              ) : (
-                <FileImageIcon className="w-8 h-8 text-gray-500" />
-              )}
-            </div>
-            <div className="flex-grow grid grid-cols-1 md:grid-cols-2 gap-3">
-              <div>
-                  <label className="block text-xs font-semibold text-gray-300 mb-1">画像プロンプト (英語)</label>
-                  <textarea value={scene.imagePrompt} onChange={(e) => updateScene(scene.id, { imagePrompt: e.target.value })} rows={4} disabled={isDisabled} className="w-full text-sm bg-gray-800 border-gray-600 rounded-lg p-2 focus:ring-1 focus:ring-purple-500 focus:border-purple-500 transition disabled:bg-gray-700" />
-              </div>
-              <div>
-                  <label className="block text-xs font-semibold text-gray-300 mb-1">アニメーションプロンプト</label>
-                  <textarea value={scene.animationPrompt} onChange={(e) => updateScene(scene.id, { animationPrompt: e.target.value })} rows={4} disabled={isDisabled} className="w-full text-sm bg-gray-800 border-gray-600 rounded-lg p-2 focus:ring-1 focus:ring-purple-500 focus:border-purple-500 transition disabled:bg-gray-700" />
-              </div>
-            </div>
-        </div>
-        {scene.status === 'error' && <p className="text-xs text-red-400 mt-2" title={scene.errorMessage}><span className="font-semibold">エラー:</span> {scene.errorMessage}</p>}
-      </div>
-    );
-  };
-
   const InputField = ({ label, value, onChange, copyValue }: { label: string, value: string, onChange: (v: string) => void, copyValue: string }) => (
     <div>
         <label className="block text-xs text-purple-400 font-semibold tracking-wider mb-1">{label}</label>
@@ -502,70 +808,128 @@ const App: React.FC = () => {
       <div className="bg-gray-700/50 p-4 rounded-lg space-y-4">
         <div>
           <label htmlFor="camera-work" className="block text-xs font-medium text-gray-400 mb-1">カメラワーク</label>
-          <select id="camera-work" value={cameraWork} onChange={e => setCameraWork(e.target.value)} className="w-full bg-gray-600 border-gray-500 rounded-md p-2 text-sm focus:ring-1 focus:ring-purple-500 focus:border-purple-500">
-            {Object.entries(cameraWorkOptions).map(([value, label]) => (<option key={value} value={value}>{label}</option>))}
+          <select id="camera-work" value={cameraWork} onChange={e => setCameraWork(e.target.value)} className="w-full bg-gray-600 border-gray-500 rounded-md p-2 focus:ring-1 focus:ring-purple-500 transition">
+            {Object.entries(cameraWorkOptions).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
           </select>
         </div>
         <div>
-          <label className="block text-xs font-medium text-gray-400 mb-2">エフェクト (複数選択可)</label>
-          <div className="flex flex-wrap gap-2">
+          <label className="block text-xs font-medium text-gray-400 mb-1">エフェクト</label>
+          <div className="grid grid-cols-2 gap-2">
             {Object.entries(effectOptions).map(([value, label]) => (
-              <label key={value} className={`flex items-center space-x-2 px-3 py-1 rounded-full text-sm cursor-pointer transition-colors ${effects.includes(value) ? 'bg-purple-600 text-white' : 'bg-gray-600 hover:bg-gray-500'}`}>
-                <input type="checkbox" className="hidden" checked={effects.includes(value)} onChange={() => handleEffectChange(value)} />
-                <span>{label}</span>
-              </label>
+              <button key={value} onClick={() => handleEffectChange(value)} className={`text-sm text-left w-full p-2 rounded-md transition-colors ${effects.includes(value) ? 'bg-purple-600 text-white' : 'bg-gray-600 hover:bg-gray-500'}`}>
+                {label}
+              </button>
             ))}
           </div>
         </div>
-        <VideoModelSelector videoModel={videoModel} setVideoModel={setVideoModel} />
       </div>
-    </div>
-  );
-
-  const VideoModelSelector = ({ videoModel, setVideoModel }: { videoModel: VideoModel, setVideoModel: (m: VideoModel) => void }) => (
-    <div>
-      <label className="block text-xs font-medium text-gray-400 mb-2">ビデオ品質 (VEO 3.1)</label>
-      <div className="flex bg-gray-600 rounded-lg p-1">
-        <button onClick={() => setVideoModel('veo-3.1-fast-generate-preview')} className={`flex-1 py-1 text-sm font-semibold rounded-md transition-colors ${videoModel === 'veo-3.1-fast-generate-preview' ? 'bg-purple-600 text-white' : 'text-gray-300 hover:bg-gray-500'}`}>高速</button>
-        <button onClick={() => setVideoModel('veo-3.1-generate-preview')} className={`flex-1 py-1 text-sm font-semibold rounded-md transition-colors ${videoModel === 'veo-3.1-generate-preview' ? 'bg-purple-600 text-white' : 'text-gray-300 hover:bg-gray-500'}`}>高品質</button>
-      </div>
-      <p className="text-xs text-gray-500 mt-2">高品質モードは生成に時間がかかりますが、より詳細なビデオが生成されます。</p>
     </div>
   );
 
   const renderLipSyncToggle = () => (
-    <div className="mt-4">
-        <label htmlFor="lipsync-toggle" className="flex items-center justify-between cursor-pointer">
-            <span className="font-medium text-gray-300">キャラクターにリップシンクさせる</span>
-            <div className="relative">
-                <input id="lipsync-toggle" type="checkbox" className="sr-only" checked={lipSync} onChange={() => setLipSync(!lipSync)} />
-                <div className={`block w-14 h-8 rounded-full transition-colors ${lipSync ? 'bg-purple-600' : 'bg-gray-600'}`}></div>
-                <div className={`dot absolute left-1 top-1 bg-white w-6 h-6 rounded-full transition-transform ${lipSync ? 'transform translate-x-6' : ''}`}></div>
-            </div>
+    <div className="flex items-center justify-between bg-gray-700/50 p-4 rounded-lg">
+      <div>
+        <label htmlFor="lip-sync-toggle" className="font-medium text-gray-200">
+          口パク（リップシンク）を試す (β)
         </label>
-        <p className="text-xs text-gray-500 mt-2">オンにすると、AIが楽曲に合わせた自然な口の動きを生成しようと試みます。</p>
+        <p className="text-xs text-gray-400">
+          AIが歌っているような口の動きを生成します。顔がはっきり写っている画像で最も効果的です。
+        </p>
+      </div>
+      <label htmlFor="lip-sync-toggle" className="relative inline-flex items-center cursor-pointer">
+        <input type="checkbox" id="lip-sync-toggle" className="sr-only peer" checked={lipSync} onChange={(e) => setLipSync(e.target.checked)} />
+        <div className="w-11 h-6 bg-gray-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-purple-800 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-purple-600"></div>
+      </label>
     </div>
   );
   
   const ErrorMessage = ({ message }: { message: string }) => (
-     <div className="bg-red-900/50 text-red-300 p-4 rounded-lg flex items-center space-x-3 my-4">
-        <AlertTriangleIcon className="h-6 w-6" /><p>{message}</p>
+    <div className="bg-red-900/50 border border-red-500 text-red-300 px-4 py-3 rounded-lg relative" role="alert">
+      <div className="flex items-center">
+        <AlertTriangleIcon className="h-5 w-5 mr-3" />
+        <span className="block sm:inline">{message}</span>
+      </div>
+    </div>
+  );
+
+  const SettingsModal = () => (
+      <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
+        <div className="bg-gray-800 border border-gray-600 rounded-2xl shadow-xl w-full max-w-md">
+          <div className="flex justify-between items-center p-4 border-b border-gray-700">
+            <h2 className="text-xl font-semibold flex items-center gap-2"><SettingsIcon className="w-6 h-6 text-purple-400" /> 設定</h2>
+            <button onClick={() => setIsSettingsOpen(false)} className="p-1 text-gray-400 hover:text-white rounded-full"><XIcon className="w-6 h-6"/></button>
+          </div>
+          <div className="p-6 space-y-6">
+            <div>
+              <h3 className="text-lg font-semibold text-gray-200 mb-2 flex items-center gap-2"><KeyRoundIcon className="w-5 h-5"/>APIキー設定</h3>
+              <p className="text-sm text-gray-400 mb-3">APIキーが無効な場合や変更したい場合は、こちらから再選択してください。</p>
+              <button
+                onClick={async () => {
+                  try {
+                    await window.aistudio.openSelectKey();
+                    setIsKeySelected(true);
+                    setIsSettingsOpen(false);
+                  } catch (e) { setError("APIキー選択ダイアログを開けませんでした。"); }
+                }}
+                className="w-full flex items-center justify-center text-md font-semibold py-2 px-4 rounded-lg transition-colors bg-purple-600 hover:bg-purple-700"
+              >
+                APIキーを再選択する
+              </button>
+               <p className="text-xs text-gray-500 mt-2 text-center">
+                課金等の詳細は
+                <a href="https://ai.google.dev/gemini-api/docs/billing" target="_blank" rel="noopener noreferrer" className="text-purple-400 hover:underline ml-1">こちら</a>
+                をご覧ください。
+              </p>
+            </div>
+            <div>
+              <h3 className="text-lg font-semibold text-gray-200 mb-2 flex items-center gap-2"><FilmIcon className="w-5 h-5"/>ビデオモデル設定</h3>
+              <p className="text-sm text-gray-400 mb-3">使用するビデオ生成モデルを選択します。高品質モデルは生成に時間がかかる場合があります。</p>
+              <select 
+                value={videoModel} 
+                onChange={e => setVideoModel(e.target.value as VideoModel)} 
+                className="w-full bg-gray-700 border-gray-600 rounded-lg p-2 focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition"
+              >
+                <option value="veo-3.1-fast-generate-preview">Veo Fast (速度優先)</option>
+                <option value="veo-3.1-generate-preview">Veo HD (品質優先)</option>
+              </select>
+            </div>
+          </div>
+        </div>
       </div>
   );
 
   return (
-    <div className="min-h-screen bg-gray-900 text-white flex flex-col items-center justify-center p-4 sm:p-6 lg:p-8 font-sans">
-      <div className="w-full max-w-3xl mx-auto">
-        <header className="text-center mb-8">
-          <h1 className="text-4xl sm:text-5xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-pink-600 mb-2">
-            AI ミュージックビデオメーカー
+    <div className="bg-gray-800 text-white min-h-screen font-sans">
+      {isSettingsOpen && <SettingsModal />}
+      <main className="max-w-4xl mx-auto p-4 sm:p-6 lg:p-8">
+        <header className="relative text-center mb-10">
+           <button
+            onClick={() => setIsSettingsOpen(true)}
+            className="absolute top-0 right-0 p-2 text-gray-400 hover:text-white transition-colors"
+            title="設定"
+            aria-label="設定を開く"
+          >
+            <SettingsIcon className="w-6 h-6" />
+          </button>
+          <div className="flex justify-center items-center gap-4 mb-4">
+            <MusicIcon className="h-8 w-8 text-pink-400" />
+            <FileImageIcon className="h-8 w-8 text-purple-400" />
+            <FilmIcon className="h-8 w-8 text-pink-400" />
+          </div>
+          <h1 className="text-3xl sm:text-4xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-pink-500">
+            AI Music Video Maker
           </h1>
-          <p className="text-gray-400">楽曲と画像から、AIでアニメーションビデオを生成します。</p>
+          <p className="mt-3 text-gray-400 max-w-2xl mx-auto">
+            AIの力で、あなたの楽曲と一枚の画像からアニメーション付きミュージックビデオを生成します。
+          </p>
         </header>
-        <main className="bg-gray-800 rounded-2xl shadow-2xl p-6 sm:p-8 transition-all duration-300">
+        <div className="bg-gray-900/70 p-6 sm:p-8 rounded-2xl shadow-2xl border border-gray-700">
           {renderContent()}
-        </main>
-      </div>
+        </div>
+        <footer className="text-center mt-8 text-xs text-gray-600">
+          <p>Powered by Google Gemini API</p>
+        </footer>
+      </main>
     </div>
   );
 };

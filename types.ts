@@ -1,3 +1,5 @@
+import { VideoModel } from './services/geminiService';
+
 export enum AppStatus {
   IDLE,
   LOADING,
