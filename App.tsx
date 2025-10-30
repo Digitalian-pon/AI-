@@ -1,14 +1,13 @@
-
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { AppStatus, AppMode, GenerationStep, Scene } from './types';
-import { generateAnimationVideo, fileToBase64, generateLyrics, generateTheme, generateImage, generateScenePrompts } from './services/geminiService';
+import { generateAnimationVideo, fileToBase64, generateLyrics, generateTheme, generateImage, generateScenePrompts, translateText } from './services/geminiService';
 import { VideoModel } from './services/geminiService';
 import { parseLyrics } from './utils';
 import FileUpload from './components/FileUpload';
 import Loader from './components/Loader';
 import VideoResult from './components/VideoResult';
 import LyricsDisplay from './components/LyricsDisplay';
-import { SparklesIcon, AlertTriangleIcon, Wand2Icon, MusicIcon, FileImageIcon, FilmIcon, UploadCloudIcon, ClipboardCopyIcon, ExternalLinkIcon, KeyRoundIcon, ListVideoIcon, RotateCcwIcon, ClockIcon, StopCircleIcon, SettingsIcon, XIcon } from './components/Icons';
+import { SparklesIcon, AlertTriangleIcon, Wand2Icon, MusicIcon, FileImageIcon, FilmIcon, UploadCloudIcon, ClipboardCopyIcon, ExternalLinkIcon, KeyRoundIcon, ListVideoIcon, RotateCcwIcon, ClockIcon, StopCircleIcon, SettingsIcon, XIcon, LanguagesIcon, ArrowDownIcon } from './components/Icons';
 
 const cameraWorkOptions = {
   '': 'なし', 'slow zoom in': 'ズームイン', 'slow zoom out': 'ズームアウト',
@@ -189,13 +188,91 @@ self.onmessage = async (event) => {
 };
 `;
 
-// SceneEditorCard component moved outside of the App component to prevent re-creation on every render.
+// Helper components are moved outside of the main App component
+// to prevent them from being recreated on every render, which fixes the input bug.
+
+const ErrorMessage = ({ message }: { message: string }) => (
+  <div className="bg-red-900/50 border border-red-500 text-red-300 px-4 py-3 rounded-lg relative" role="alert">
+    <div className="flex items-center">
+      <AlertTriangleIcon className="h-5 w-5 mr-3" />
+      <span className="block sm:inline">{message}</span>
+    </div>
+  </div>
+);
+
+const SelectApiKeyScreen: React.FC<{
+  onSelect: () => Promise<void>;
+}> = ({ onSelect }) => (
+  <div className="text-center py-10">
+    <KeyRoundIcon className="h-16 w-16 mx-auto text-purple-400 mb-6" />
+    <h2 className="text-2xl font-bold mb-3">APIキーを選択してください</h2>
+    <p className="text-gray-400 mb-6 max-w-md mx-auto">ビデオ生成機能を利用するには、Google AI StudioのAPIキーを選択する必要があります。</p>
+    <button
+      onClick={onSelect}
+      className="w-full max-w-xs mx-auto flex items-center justify-center text-lg font-semibold py-3 px-6 rounded-lg transition-all duration-300 bg-gradient-to-r from-purple-500 to-pink-600 hover:from-purple-600 hover:to-pink-700 shadow-lg hover:shadow-purple-500/50 transform hover:-translate-y-1"
+    >
+      <SparklesIcon className="h-6 w-6 mr-2" />APIキーを選択
+    </button>
+    <p className="text-xs text-gray-500 mt-4">
+      APIキーの管理と課金に関する詳細は
+      <a href="https://ai.google.dev/gemini-api/docs/billing" target="_blank" rel="noopener noreferrer" className="text-purple-400 hover:underline ml-1">こちら</a>
+      をご覧ください。
+    </p>
+  </div>
+);
+
+const ModeSelectionScreen: React.FC<{ onSelectMode: (mode: AppMode) => void }> = ({ onSelectMode }) => (
+  <div className="text-center">
+    <h2 className="text-2xl font-bold mb-2">制作方法を選択してください</h2>
+    <p className="text-gray-400 mb-8">どちらの方法でも素晴らしいビデオが作れます！</p>
+    <div className="grid md:grid-cols-2 gap-6">
+      <button onClick={() => onSelectMode(AppMode.GENERATE)} className="bg-gray-700/80 p-8 rounded-2xl hover:bg-purple-900/50 border border-gray-600 hover:border-purple-500 transition-all transform hover:-translate-y-1">
+        <Wand2Icon className="h-12 w-12 mx-auto text-purple-400 mb-4" />
+        <h3 className="text-xl font-semibold mb-2">AIでゼロから作る</h3>
+        <p className="text-gray-400 text-sm">テーマを入力し、AIに歌詞・画像を生成させ、まったく新しいミュージックビデオを制作します。</p>
+      </button>
+      <button onClick={() => onSelectMode(AppMode.UPLOAD)} className="bg-gray-700/80 p-8 rounded-2xl hover:bg-pink-900/50 border border-gray-600 hover:border-pink-500 transition-all transform hover:-translate-y-1">
+        <UploadCloudIcon className="h-12 w-12 mx-auto text-pink-400 mb-4" />
+        <h3 className="text-xl font-semibold mb-2">ファイルを持ち込む</h3>
+        <p className="text-gray-400 text-sm">お手持ちの楽曲と画像ファイルを使って、ミュージックビデオを制作します。</p>
+        <p className="text-xs text-pink-300 mt-2 font-semibold">Suno AI や Midjourney の素材に最適！</p>
+      </button>
+    </div>
+  </div>
+);
+
 const SceneEditorCard: React.FC<{
   scene: Scene;
   isGeneratingClips: boolean;
   onGenerateClip: (sceneId: number) => void;
   onUpdateScene: (id: number, updates: Partial<Scene>) => void;
-}> = ({ scene, isGeneratingClips, onGenerateClip, onUpdateScene }) => {
+  onTranslate: (text: string, targetLanguage: 'ja' | 'en') => Promise<string>;
+}> = ({ scene, isGeneratingClips, onGenerateClip, onUpdateScene, onTranslate }) => {
+  const [imageTranslation, setImageTranslation] = useState('');
+  const [animationTranslation, setAnimationTranslation] = useState('');
+  const [isTranslating, setIsTranslating] = useState<'image' | 'animation' | null>(null);
+
+  const handleTranslate = async (type: 'image' | 'animation') => {
+    const textToTranslate = type === 'image' ? scene.imagePrompt : scene.animationPrompt;
+    if (!textToTranslate) return;
+
+    setIsTranslating(type);
+    if(type === 'image') setImageTranslation('');
+    else setAnimationTranslation('');
+
+    try {
+      const translation = await onTranslate(textToTranslate, 'ja');
+      if (type === 'image') setImageTranslation(translation);
+      else setAnimationTranslation(translation);
+    } catch (e) {
+      const errorMessage = '翻訳に失敗しました。';
+      if (type === 'image') setImageTranslation(errorMessage);
+      else setAnimationTranslation(errorMessage);
+    } finally {
+      setIsTranslating(null);
+    }
+  };
+
   const onGenerate = () => onGenerateClip(scene.id);
   const thumbnail = scene.generatedImageBase64 ? `data:image/png;base64,${scene.generatedImageBase64}` : null;
   
@@ -237,18 +314,312 @@ const SceneEditorCard: React.FC<{
           </div>
           <div className="flex-grow grid grid-cols-1 md:grid-cols-2 gap-3">
             <div>
-                <label className="block text-xs font-semibold text-gray-300 mb-1">画像プロンプト (英語)</label>
+                <div className="flex justify-between items-center mb-1">
+                    <label className="block text-xs font-semibold text-gray-300">画像プロンプト (英語)</label>
+                    <button onClick={() => handleTranslate('image')} disabled={isDisabled || isTranslating === 'image' || !scene.imagePrompt} className="flex items-center gap-1 text-xs text-purple-400 hover:text-purple-300 transition-colors disabled:text-gray-500 disabled:cursor-not-allowed">
+                        {isTranslating === 'image' ? <div className="w-3 h-3 border-2 border-purple-400 border-t-transparent rounded-full animate-spin"></div> : <LanguagesIcon className="w-3 h-3" />} 翻訳
+                    </button>
+                </div>
                 <textarea value={scene.imagePrompt} onChange={(e) => onUpdateScene(scene.id, { imagePrompt: e.target.value })} rows={4} disabled={isDisabled} className="w-full text-sm bg-gray-800 border-gray-600 rounded-lg p-2 focus:ring-1 focus:ring-purple-500 focus:border-purple-500 transition disabled:bg-gray-700" />
+                {imageTranslation && <div className="mt-2 p-2 bg-gray-800/70 rounded-md text-xs text-gray-300 border border-gray-600">{imageTranslation}</div>}
             </div>
             <div>
-                <label className="block text-xs font-semibold text-gray-300 mb-1">アニメーションプロンプト</label>
+                <div className="flex justify-between items-center mb-1">
+                    <label className="block text-xs font-semibold text-gray-300">アニメーションプロンプト</label>
+                     <button onClick={() => handleTranslate('animation')} disabled={isDisabled || isTranslating === 'animation' || !scene.animationPrompt} className="flex items-center gap-1 text-xs text-purple-400 hover:text-purple-300 transition-colors disabled:text-gray-500 disabled:cursor-not-allowed">
+                        {isTranslating === 'animation' ? <div className="w-3 h-3 border-2 border-purple-400 border-t-transparent rounded-full animate-spin"></div> : <LanguagesIcon className="w-3 h-3" />} 翻訳
+                    </button>
+                </div>
                 <textarea value={scene.animationPrompt} onChange={(e) => onUpdateScene(scene.id, { animationPrompt: e.target.value })} rows={4} disabled={isDisabled} className="w-full text-sm bg-gray-800 border-gray-600 rounded-lg p-2 focus:ring-1 focus:ring-purple-500 focus:border-purple-500 transition disabled:bg-gray-700" />
+                 {animationTranslation && <div className="mt-2 p-2 bg-gray-800/70 rounded-md text-xs text-gray-300 border border-gray-600">{animationTranslation}</div>}
             </div>
           </div>
       </div>
       {scene.status === 'error' && <p className="text-xs text-red-400 -mt-2" title={scene.errorMessage}><span className="font-semibold">エラー:</span> {scene.errorMessage}</p>}
     </div>
   );
+};
+
+const InputField: React.FC<{ label: string, value: string, onChange: (v: string) => void, copyValue: string }> = ({ label, value, onChange, copyValue }) => (
+    <div>
+        <label className="block text-xs text-purple-400 font-semibold tracking-wider mb-1">{label}</label>
+        <div className="flex items-center gap-2">
+            <input type="text" value={value} onChange={e => onChange(e.target.value)} className="flex-grow w-full bg-gray-700 border-gray-600 rounded-lg px-3 py-2 focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition" />
+            <button onClick={() => navigator.clipboard.writeText(copyValue)} title={`Copy ${label}`} className="p-2 bg-gray-600 hover:bg-gray-500 rounded-lg"><ClipboardCopyIcon className="h-5 w-5" /></button>
+        </div>
+    </div>
+);
+
+const UploadFlow: React.FC<{
+    setMode: (mode: AppMode) => void;
+    audioFile: File | null;
+    setAudioFile: (file: File | null) => void;
+    imageFile: File | null;
+    setImageFile: (file: File | null) => void;
+    japaneseMotionPrompt: string;
+    setJapaneseMotionPrompt: (prompt: string) => void;
+    motionPrompt: string;
+    setMotionPrompt: (prompt: string) => void;
+    handleTranslateMotionPrompt: () => void;
+    isTranslating: boolean;
+    cameraWork: string;
+    setCameraWork: (work: string) => void;
+    effects: string[];
+    handleEffectChange: (effect: string) => void;
+    lipSync: boolean;
+    setLipSync: (sync: boolean) => void;
+    status: AppStatus;
+    error: string;
+    handleGenerateVideo: () => void;
+}> = ({
+    setMode, audioFile, setAudioFile, imageFile, setImageFile,
+    japaneseMotionPrompt, setJapaneseMotionPrompt,
+    motionPrompt, setMotionPrompt, handleTranslateMotionPrompt, isTranslating,
+    cameraWork, setCameraWork, effects, handleEffectChange, lipSync, setLipSync,
+    status, error, handleGenerateVideo
+}) => {
+    const isGenerateDisabled = status === AppStatus.LOADING || !imageFile || !motionPrompt;
+    return (
+        <div className="space-y-6">
+            <button onClick={() => setMode(AppMode.SELECT)} className="text-sm text-gray-400 hover:text-white transition-colors mb-4">&lt; モード選択に戻る</button>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <FileUpload label="① 楽曲をアップロード" acceptedTypes="audio/mpeg,audio/wav,audio/x-wav" file={audioFile} onFileChange={setAudioFile} isAudio={true} />
+                <FileUpload label="② 画像をアップロード" acceptedTypes="image/png,image/jpeg" file={imageFile} onFileChange={setImageFile} />
+            </div>
+            <div>
+                <label htmlFor="upload-prompt-ja" className="block text-sm font-medium text-gray-300 mb-2">③ アニメーションの指示</label>
+                <textarea id="upload-prompt-ja" value={japaneseMotionPrompt} onChange={(e) => setJapaneseMotionPrompt(e.target.value)} placeholder="例：少女が幸せそうに歌っている、クローズアップ、キラキラ光るエフェクト" rows={3} className="w-full bg-gray-700 border-gray-600 rounded-lg p-3 focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition" />
+                <div className="flex justify-center my-2">
+                  <button onClick={handleTranslateMotionPrompt} disabled={isTranslating || !japaneseMotionPrompt} className="flex items-center gap-2 px-4 py-2 text-sm font-semibold bg-gray-600 rounded-md hover:bg-gray-500 transition-colors disabled:bg-gray-700 disabled:text-gray-500 disabled:cursor-not-allowed">
+                    {isTranslating ? <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div> : <LanguagesIcon className="w-4 h-4" />}
+                    日本語から英語へ翻訳
+                    <ArrowDownIcon className="w-4 h-4" />
+                  </button>
+                </div>
+                <textarea id="upload-prompt" value={motionPrompt} onChange={(e) => setMotionPrompt(e.target.value)} placeholder="翻訳された英語のプロンプトがここに表示されます。例：a girl singing happily, close-up shot, sparkling lights effect" rows={3} className="w-full bg-gray-800 border-gray-600 rounded-lg p-3 focus:ring-2 focus:ring-pink-500 focus:border-pink-500 transition" aria-label="English animation prompt" />
+                 <p className="text-xs text-gray-400 mt-2">
+                    <strong className="text-purple-300">日本語で指示を入力し「翻訳」ボタンを押してください。</strong>生成AIは英語の指示で最も性能を発揮します。翻訳後の英語は必要に応じて編集できます。
+                </p>
+            </div>
+            {/* Animation Options Inlined */}
+            <div>
+                <label className="block text-sm font-medium text-gray-300 mb-2">動きとエフェクトを追加 (オプション)</label>
+                <div className="bg-gray-700/50 p-4 rounded-lg space-y-4">
+                    <div>
+                        <label htmlFor="camera-work" className="block text-xs font-medium text-gray-400 mb-1">カメラワーク</label>
+                        <select id="camera-work" value={cameraWork} onChange={e => setCameraWork(e.target.value)} className="w-full bg-gray-600 border-gray-500 rounded-md p-2 focus:ring-1 focus:ring-purple-500 transition">
+                            {Object.entries(cameraWorkOptions).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                        </select>
+                    </div>
+                    <div>
+                        <label className="block text-xs font-medium text-gray-400 mb-1">エフェクト</label>
+                        <div className="grid grid-cols-2 gap-2">
+                            {Object.entries(effectOptions).map(([value, label]) => (
+                                <button key={value} onClick={() => handleEffectChange(value)} className={`text-sm text-left w-full p-2 rounded-md transition-colors ${effects.includes(value) ? 'bg-purple-600 text-white' : 'bg-gray-600 hover:bg-gray-500'}`}>
+                                    {label}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            </div>
+            {/* Lip Sync Toggle Inlined */}
+            <div className="flex items-center justify-between bg-gray-700/50 p-4 rounded-lg">
+              <div>
+                <label htmlFor="lip-sync-toggle" className="font-medium text-gray-200">
+                  口パク（リップシンク）を試す (β)
+                </label>
+                <p className="text-xs text-gray-400">
+                  AIが歌っているような口の動きを生成します。顔がはっきり写っている画像で最も効果的です。
+                </p>
+              </div>
+              <label htmlFor="lip-sync-toggle" className="relative inline-flex items-center cursor-pointer">
+                <input type="checkbox" id="lip-sync-toggle" className="sr-only peer" checked={lipSync} onChange={(e) => setLipSync(e.target.checked)} />
+                <div className="w-11 h-6 bg-gray-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-purple-800 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-purple-600"></div>
+              </label>
+            </div>
+            {error && <ErrorMessage message={error} />}
+            <button onClick={handleGenerateVideo} disabled={isGenerateDisabled} className={`w-full flex items-center justify-center text-lg font-semibold py-3 px-6 rounded-lg transition-all duration-300 ${isGenerateDisabled ? 'bg-gray-600 text-gray-400 cursor-not-allowed' : 'bg-gradient-to-r from-purple-500 to-pink-600 hover:from-purple-600 hover:to-pink-700 shadow-lg hover:shadow-purple-500/50 transform hover:-translate-y-1'}`}>
+                <SparklesIcon className="h-6 w-6 mr-2" />ビデオを生成する
+            </button>
+        </div>
+    );
+};
+
+const GenerateFlow: React.FC<{
+    setMode: (mode: AppMode) => void;
+    step: GenerationStep;
+    language: 'ja' | 'en';
+    setLanguage: (lang: 'ja' | 'en') => void;
+    lyricTheme: string;
+    setLyricTheme: (theme: string) => void;
+    handleGenerateTheme: () => void;
+    isGeneratingTheme: boolean;
+    error: string;
+    handleGenerateLyrics: () => void;
+    isGeneratingLyrics: boolean;
+    generatedTitle: string;
+    setGeneratedTitle: (title: string) => void;
+    generatedMusicStyle: string;
+    setGeneratedMusicStyle: (style: string) => void;
+    generatedLyrics: string;
+    audioFile: File | null;
+    setAudioFile: (file: File | null) => void;
+    isGeneratingPrompts: boolean;
+    scenes: Scene[];
+    isGeneratingClips: boolean;
+    handleGenerateSingleClip: (id: number) => void;
+    updateScene: (id: number, updates: Partial<Scene>) => void;
+    generationDelay: number;
+    setGenerationDelay: (delay: number) => void;
+    handleStopGeneration: () => void;
+    handleGenerateAllClips: () => void;
+    generationStatusMessage: string;
+    countdown: number;
+    onTranslate: (text: string, targetLanguage: 'ja' | 'en') => Promise<string>;
+}> = (props) => {
+    const renderStepContent = () => {
+        switch (props.step) {
+            case GenerationStep.LYRICS: return (
+                <div>
+                    <h3 className="text-xl font-semibold mb-2">① 歌詞のテーマを入力</h3>
+                    <p className="text-gray-400 mb-4">AIがあなたのためのオリジナル歌詞を生成します。</p>
+                    <div className="mb-4">
+                        <label className="block text-sm font-medium text-gray-400 mb-2">生成する言語</label>
+                        <div className="flex bg-gray-700 rounded-lg p-1">
+                            <button onClick={() => props.setLanguage('ja')} className={`flex-1 py-2 text-sm font-semibold rounded-md transition-colors ${props.language === 'ja' ? 'bg-purple-600 text-white' : 'text-gray-300 hover:bg-gray-600'}`}>日本語</button>
+                            <button onClick={() => props.setLanguage('en')} className={`flex-1 py-2 text-sm font-semibold rounded-md transition-colors ${props.language === 'en' ? 'bg-purple-600 text-white' : 'text-gray-300 hover:bg-gray-600'}`}>English</button>
+                        </div>
+                    </div>
+                    <div className="flex justify-between items-center mb-2">
+                        <label htmlFor="lyric-theme" className="block text-sm font-medium text-gray-400">テーマ</label>
+                        <button onClick={props.handleGenerateTheme} disabled={props.isGeneratingTheme} className="text-sm text-purple-400 hover:text-purple-300 transition-colors flex items-center disabled:text-gray-500 disabled:cursor-not-allowed">
+                            <Wand2Icon className="h-4 w-4 mr-1" />{props.isGeneratingTheme ? '生成中...' : 'テーマをAIに考えてもらう'}
+                        </button>
+                    </div>
+                    <textarea id="lyric-theme" value={props.lyricTheme} onChange={(e) => props.setLyricTheme(e.target.value)} placeholder="例：雨上がりの虹、未来への希望" rows={3} className="w-full bg-gray-700 border-gray-600 rounded-lg p-3 focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition mb-4"/>
+                    {props.error && <ErrorMessage message={props.error} />}
+                    <button onClick={props.handleGenerateLyrics} disabled={props.isGeneratingLyrics || !props.lyricTheme} className={`w-full flex items-center justify-center font-semibold py-2 px-4 rounded-lg transition-all ${!props.lyricTheme || props.isGeneratingLyrics ? 'bg-gray-600 cursor-not-allowed' : 'bg-purple-600 hover:bg-purple-700'}`}>
+                        {props.isGeneratingLyrics ? '生成中...' : <><SparklesIcon className="h-5 w-5 mr-2" />歌詞を生成する</>}
+                    </button>
+                </div>
+            );
+            case GenerationStep.PRODUCTION: return (
+                <div>
+                    <h3 className="text-xl font-semibold mb-2">② 楽曲作成＆ビデオ生成</h3>
+                    <p className="text-gray-400 mb-6">生成された歌詞で楽曲を作成・アップロードし、各シーンのビデオを生成しましょう。</p>
+
+                    <div className="space-y-4 mb-6">
+                        <InputField label="TITLE" value={props.generatedTitle} onChange={props.setGeneratedTitle} copyValue={props.generatedTitle} />
+                        <InputField label="MUSIC STYLE" value={props.generatedMusicStyle} onChange={props.setGeneratedMusicStyle} copyValue={props.generatedMusicStyle} />
+                        <div>
+                            <label className="block text-xs text-purple-400 font-semibold tracking-wider mb-1">LYRICS</label>
+                            <LyricsDisplay lyrics={props.generatedLyrics} />
+                            <button onClick={() => navigator.clipboard.writeText(props.generatedLyrics)} className="w-full mt-2 bg-gray-600 hover:bg-gray-500 py-2 rounded-lg text-sm flex items-center justify-center">
+                                <ClipboardCopyIcon className="h-4 w-4 mr-2" />歌詞をコピー
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <div className="bg-gray-900/50 p-4 rounded-lg mb-6 border border-gray-700">
+                      <h4 className="font-semibold text-purple-300 mb-3">楽曲作成ガイド</h4>
+                      <ol className="list-decimal list-inside space-y-2 text-sm text-gray-300">
+                          <li>上のボタンから歌詞などをコピーし、Suno AIで曲を作成します。</li>
+                          <li>完成した楽曲をMP3形式などでダウンロードします。</li>
+                          <li>この画面に戻り、下のエリアからファイルをアップロードします。</li>
+                      </ol>
+                       <a href="https://suno.com/" target="_blank" rel="noopener noreferrer" className="w-full mt-4 flex items-center justify-center font-semibold py-2 px-4 rounded-lg transition-all bg-green-600 hover:bg-green-700 text-white shadow-lg hover:shadow-green-500/50">
+                        Suno AI で楽曲を作成する<ExternalLinkIcon className="h-5 w-5 ml-2" />
+                      </a>
+                    </div>
+                    <FileUpload label="完成した楽曲ファイルをアップロード" acceptedTypes="audio/mpeg,audio/wav,audio/x-wav" file={props.audioFile} onFileChange={props.setAudioFile} isAudio={true} />
+                
+                    <div className="mt-8 pt-6 border-t border-gray-700">
+                        <h3 className="text-xl font-semibold mb-2">③ シーンごとのビデオクリップ</h3>
+                        <p className="text-gray-400 mb-4">AIが生成したプロンプトを編集し、シーンごとにビデオを生成できます。</p>
+                        
+                        {props.isGeneratingPrompts ? (
+                            <div className="flex items-center justify-center p-6 bg-gray-700/50 rounded-lg">
+                                <div className="w-6 h-6 border-4 border-purple-400 border-t-transparent rounded-full animate-spin mr-3"></div>
+                                <span>シーンのプロンプトを生成中...</span>
+                            </div>
+                        ) : props.error && !props.scenes.length ? (
+                            <ErrorMessage message={props.error} />
+                        ) : props.scenes.length > 0 && (
+                            <div className="space-y-4 mb-6">
+                                {props.scenes.map(scene => <SceneEditorCard 
+                                    key={scene.id} 
+                                    scene={scene}
+                                    isGeneratingClips={props.isGeneratingClips}
+                                    onGenerateClip={props.handleGenerateSingleClip}
+                                    onUpdateScene={props.updateScene}
+                                    onTranslate={props.onTranslate}
+                                />)}
+                                
+                                <div className="bg-gray-900/50 p-4 rounded-lg border border-gray-700 space-y-4">
+                                    <div>
+                                        <label htmlFor="generation-delay" className="flex items-center text-sm font-medium text-gray-300 mb-2">
+                                            <ClockIcon className="w-5 h-5 mr-2 text-purple-400" />
+                                            生成間隔（分）
+                                        </label>
+                                        <input
+                                            id="generation-delay"
+                                            type="number"
+                                            value={props.generationDelay}
+                                            onChange={(e) => props.setGenerationDelay(Math.max(0, parseInt(e.target.value, 10)))}
+                                            min="0"
+                                            disabled={props.isGeneratingClips}
+                                            className="w-full bg-gray-700 border-gray-600 rounded-lg p-2 focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition disabled:bg-gray-800 disabled:cursor-not-allowed"
+                                        />
+                                        <p className="text-xs text-gray-500 mt-2">
+                                            無料枠のAPI制限を避けるため、各ビデオ生成の間に遅延を設定します。1分以上を推奨します。
+                                        </p>
+                                    </div>
+                                    {props.isGeneratingClips ? (
+                                      <button onClick={props.handleStopGeneration} className="w-full flex items-center justify-center text-lg font-semibold py-3 px-6 rounded-lg transition-all duration-300 bg-red-600 hover:bg-red-700 shadow-lg">
+                                        <StopCircleIcon className="h-6 w-6 mr-2" />
+                                        生成を中止
+                                      </button>
+                                    ) : (
+                                      <button onClick={props.handleGenerateAllClips} disabled={props.scenes.filter(s => s.status !== 'completed').length === 0} className={`w-full flex items-center justify-center text-lg font-semibold py-3 px-6 rounded-lg transition-all duration-300 ${props.scenes.filter(s => s.status !== 'completed').length === 0 ? 'bg-gray-600 cursor-not-allowed' : 'bg-gradient-to-r from-purple-500 to-pink-600 hover:from-purple-600 hover:to-pink-700 shadow-lg'}`}>
+                                        <SparklesIcon className="h-6 w-6 mr-2" />
+                                        {`残り${props.scenes.filter(s => s.status !== 'completed').length}件をまとめて生成`}
+                                      </button>
+                                    )}
+                                    {(props.isGeneratingClips || props.generationStatusMessage) && (
+                                        <div className="text-center text-sm text-purple-300 pt-2">
+                                            <p>{props.generationStatusMessage}</p>
+                                            {props.countdown > 0 && <p className="font-mono text-lg">{Math.floor(props.countdown / 60)}:{(props.countdown % 60).toString().padStart(2, '0')}</p>}
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            );
+        }
+    }
+    
+    const steps = [ {name: '歌詞', icon: Wand2Icon}, {name: '制作', icon: FilmIcon} ];
+
+    return (
+        <div>
+            <button onClick={() => props.setMode(AppMode.SELECT)} className="text-sm text-gray-400 hover:text-white transition-colors mb-4">&lt; モード選択に戻る</button>
+            <div className="mb-8">
+                <ol className="flex items-center w-full">
+                    {steps.map((s, index) => (
+                         <li key={s.name} className={`flex w-full items-center ${index < steps.length - 1 ? "after:content-[''] after:w-full after:h-1 after:border-b after:border-4 after:inline-block" : ''} ${index <= props.step ? 'text-purple-400 after:border-purple-600' : 'text-gray-500 after:border-gray-700'}`}>
+                           <span className={`flex flex-col items-center justify-center w-12 h-12 rounded-full shrink-0 ${index <= props.step ? 'bg-purple-800' : 'bg-gray-700'}`}>
+                               <s.icon className="w-6 h-6" />
+                           </span>
+                        </li>
+                    ))}
+                </ol>
+            </div>
+            {renderStepContent()}
+        </div>
+    );
 };
 
 const App: React.FC = () => {
@@ -260,11 +631,13 @@ const App: React.FC = () => {
 
   const [audioFile, setAudioFile] = useState<File | null>(null);
   const [imageFile, setImageFile] = useState<File | null>(null);
+  const [japaneseMotionPrompt, setJapaneseMotionPrompt] = useState('');
   const [motionPrompt, setMotionPrompt] = useState<string>('');
   const [cameraWork, setCameraWork] = useState<string>('');
   const [effects, setEffects] = useState<string[]>([]);
   const [lipSync, setLipSync] = useState<boolean>(true);
   const [videoModel, setVideoModel] = useState<VideoModel>('veo-3.1-fast-generate-preview');
+  const [isTranslating, setIsTranslating] = useState(false);
 
   const [generatedVideoUrl, setGeneratedVideoUrl] = useState<string>('');
   const [audioObjectUrl, setAudioObjectUrl] = useState<string>('');
@@ -288,13 +661,11 @@ const App: React.FC = () => {
   const workerRef = useRef<Worker | null>(null);
 
   useEffect(() => {
-    // Initialize the worker
     const blob = new Blob([workerScript], { type: 'application/javascript' });
     const workerUrl = URL.createObjectURL(blob);
     const worker = new Worker(workerUrl, { type: 'module' });
     workerRef.current = worker;
 
-    // Message handler from worker
     worker.onmessage = (event: MessageEvent) => {
         const { type, payload } = event.data;
 
@@ -341,12 +712,11 @@ const App: React.FC = () => {
         }
     };
 
-    // Cleanup on component unmount
     return () => {
         worker.terminate();
         URL.revokeObjectURL(workerUrl);
     };
-  }, []); // Empty array ensures this runs only once on mount
+  }, []);
 
   useEffect(() => {
     const checkApiKey = async () => {
@@ -389,6 +759,31 @@ const App: React.FC = () => {
     setScenes(prev => prev.map(scene => scene.id === id ? { ...scene, ...updates } : scene));
   };
 
+  const handleTranslateProp = useCallback(async (text: string, targetLanguage: 'ja' | 'en'): Promise<string> => {
+    setError('');
+    try {
+        return await translateText(text, targetLanguage);
+    } catch (err) {
+        const friendlyError = getFriendlyErrorMessage(err);
+        setError(friendlyError);
+        throw new Error(friendlyError);
+    }
+  }, []);
+
+  const handleTranslateMotionPrompt = async () => {
+    if (!japaneseMotionPrompt) return;
+    setIsTranslating(true);
+    setError('');
+    try {
+        const englishPrompt = await handleTranslateProp(japaneseMotionPrompt, 'en');
+        setMotionPrompt(englishPrompt);
+    } catch (err) {
+        // error is already set by handleTranslateProp
+    } finally {
+        setIsTranslating(false);
+    }
+  };
+
   const handleGenerateVideo = useCallback(async () => {
     if (!imageFile || !motionPrompt) {
       setError('画像とアニメーションの指示が必要です。');
@@ -423,27 +818,24 @@ const App: React.FC = () => {
 
   const handleGenerateScenePrompts = async (lyrics: string, style: string) => {
     setIsGeneratingPrompts(true);
-    setScenes([]); // Clear previous scenes
+    setScenes([]);
     setError('');
     try {
       const parsed = parseLyrics(lyrics);
       const prompts = await generateScenePrompts(lyrics, style, language);
       
-      const availablePrompts = [...prompts]; // Create a mutable copy to avoid reusing prompts
+      const availablePrompts = [...prompts];
 
       const sceneData: Scene[] = parsed.map((section, index) => {
         const cleanedHeader = section.header.toLowerCase().replace(/[\[\]():]/g, '').trim();
         
-        // Find the best match from available prompts
         const bestMatchIndex = availablePrompts.findIndex(p => {
           const cleanedApiSection = p.section.toLowerCase().replace(/[\[\]():]/g, '').trim();
-          // Prioritize exact match, then partial match in either direction
           return cleanedHeader === cleanedApiSection || cleanedHeader.includes(cleanedApiSection) || cleanedApiSection.includes(cleanedHeader);
         });
 
         let promptData;
         if (bestMatchIndex !== -1) {
-          // If a match is found, use it and remove it from the available prompts
           promptData = availablePrompts.splice(bestMatchIndex, 1)[0];
         }
 
@@ -491,7 +883,7 @@ const App: React.FC = () => {
         type: 'generate-one',
         payload: {
             scene,
-            apiKey: process.env.API_KEY, // The main thread has access to this
+            apiKey: process.env.API_KEY,
             videoModel,
             lipSync
         }
@@ -531,6 +923,7 @@ const App: React.FC = () => {
     setMode(AppMode.SELECT);
     setAudioFile(null);
     setImageFile(null);
+    setJapaneseMotionPrompt('');
     setMotionPrompt('');
     setCameraWork('');
     setEffects([]);
@@ -562,8 +955,15 @@ const App: React.FC = () => {
     setEffects(prev => prev.includes(effect) ? prev.filter(e => e !== effect) : [...prev, effect]);
   };
   
+  const handleSelectApiKey = async () => {
+      try {
+        await window.aistudio.openSelectKey();
+        setIsKeySelected(true);
+      } catch (e) { setError("APIキー選択ダイアログを開けませんでした。"); }
+  };
+
   const renderContent = () => {
-    if (!isKeySelected) return <SelectApiKeyScreen />;
+    if (!isKeySelected) return <SelectApiKeyScreen onSelect={handleSelectApiKey} />;
     if (status === AppStatus.LOADING) return <Loader />;
     
     if (status === AppStatus.SUCCESS) {
@@ -575,283 +975,64 @@ const App: React.FC = () => {
 
     switch (mode) {
       case AppMode.SELECT: return <ModeSelectionScreen onSelectMode={setMode} />;
-      case AppMode.UPLOAD: return <UploadFlow />;
-      case AppMode.GENERATE: return <GenerateFlow />;
+      case AppMode.UPLOAD: return <UploadFlow 
+        setMode={setMode}
+        audioFile={audioFile}
+        setAudioFile={setAudioFile}
+        imageFile={imageFile}
+        setImageFile={setImageFile}
+        japaneseMotionPrompt={japaneseMotionPrompt}
+        setJapaneseMotionPrompt={setJapaneseMotionPrompt}
+        motionPrompt={motionPrompt}
+        setMotionPrompt={setMotionPrompt}
+        handleTranslateMotionPrompt={handleTranslateMotionPrompt}
+        isTranslating={isTranslating}
+        cameraWork={cameraWork}
+        setCameraWork={setCameraWork}
+        effects={effects}
+        handleEffectChange={handleEffectChange}
+        lipSync={lipSync}
+        setLipSync={setLipSync}
+        status={status}
+        error={error}
+        handleGenerateVideo={handleGenerateVideo}
+        />;
+      case AppMode.GENERATE: return <GenerateFlow 
+        setMode={setMode}
+        step={step}
+        language={language}
+        setLanguage={setLanguage}
+        lyricTheme={lyricTheme}
+        setLyricTheme={setLyricTheme}
+        handleGenerateTheme={handleGenerateTheme}
+        isGeneratingTheme={isGeneratingTheme}
+        error={error}
+        handleGenerateLyrics={handleGenerateLyrics}
+        isGeneratingLyrics={isGeneratingLyrics}
+        generatedTitle={generatedTitle}
+        setGeneratedTitle={setGeneratedTitle}
+        generatedMusicStyle={generatedMusicStyle}
+        setGeneratedMusicStyle={setGeneratedMusicStyle}
+        generatedLyrics={generatedLyrics}
+        audioFile={audioFile}
+        setAudioFile={setAudioFile}
+        isGeneratingPrompts={isGeneratingPrompts}
+        scenes={scenes}
+        isGeneratingClips={isGeneratingClips}
+        handleGenerateSingleClip={handleGenerateSingleClip}
+        updateScene={updateScene}
+        generationDelay={generationDelay}
+        setGenerationDelay={setGenerationDelay}
+        handleStopGeneration={handleStopGeneration}
+        handleGenerateAllClips={handleGenerateAllClips}
+        generationStatusMessage={generationStatusMessage}
+        countdown={countdown}
+        onTranslate={handleTranslateProp}
+      />;
       default: return <ModeSelectionScreen onSelectMode={setMode} />;
     }
   };
   
-  const SelectApiKeyScreen = () => (
-    <div className="text-center py-10">
-      <KeyRoundIcon className="h-16 w-16 mx-auto text-purple-400 mb-6" />
-      <h2 className="text-2xl font-bold mb-3">APIキーを選択してください</h2>
-      <p className="text-gray-400 mb-6 max-w-md mx-auto">ビデオ生成機能を利用するには、Google AI StudioのAPIキーを選択する必要があります。</p>
-      <button
-        onClick={async () => {
-          try {
-            await window.aistudio.openSelectKey();
-            setIsKeySelected(true);
-          } catch (e) { setError("APIキー選択ダイアログを開けませんでした。"); }
-        }}
-        className="w-full max-w-xs mx-auto flex items-center justify-center text-lg font-semibold py-3 px-6 rounded-lg transition-all duration-300 bg-gradient-to-r from-purple-500 to-pink-600 hover:from-purple-600 hover:to-pink-700 shadow-lg hover:shadow-purple-500/50 transform hover:-translate-y-1"
-      >
-        <SparklesIcon className="h-6 w-6 mr-2" />APIキーを選択
-      </button>
-      <p className="text-xs text-gray-500 mt-4">
-        APIキーの管理と課金に関する詳細は
-        <a href="https://ai.google.dev/gemini-api/docs/billing" target="_blank" rel="noopener noreferrer" className="text-purple-400 hover:underline ml-1">こちら</a>
-        をご覧ください。
-      </p>
-    </div>
-  );
-
-  const ModeSelectionScreen = ({onSelectMode}: {onSelectMode: (mode: AppMode) => void}) => (
-    <div className="text-center">
-        <h2 className="text-2xl font-bold mb-2">制作方法を選択してください</h2>
-        <p className="text-gray-400 mb-8">どちらの方法でも素晴らしいビデオが作れます！</p>
-        <div className="grid md:grid-cols-2 gap-6">
-            <button onClick={() => onSelectMode(AppMode.GENERATE)} className="bg-gray-700/80 p-8 rounded-2xl hover:bg-purple-900/50 border border-gray-600 hover:border-purple-500 transition-all transform hover:-translate-y-1">
-                <Wand2Icon className="h-12 w-12 mx-auto text-purple-400 mb-4" />
-                <h3 className="text-xl font-semibold mb-2">AIでゼロから作る</h3>
-                <p className="text-gray-400 text-sm">テーマを入力し、AIに歌詞・画像を生成させ、まったく新しいミュージックビデオを制作します。</p>
-            </button>
-            <button onClick={() => onSelectMode(AppMode.UPLOAD)} className="bg-gray-700/80 p-8 rounded-2xl hover:bg-pink-900/50 border border-gray-600 hover:border-pink-500 transition-all transform hover:-translate-y-1">
-                <UploadCloudIcon className="h-12 w-12 mx-auto text-pink-400 mb-4" />
-                <h3 className="text-xl font-semibold mb-2">ファイルを持ち込む</h3>
-                <p className="text-gray-400 text-sm">お手持ちの楽曲と画像ファイルを使って、ミュージックビデオを制作します。</p>
-                <p className="text-xs text-pink-300 mt-2 font-semibold">Suno AI や Midjourney の素材に最適！</p>
-            </button>
-        </div>
-    </div>
-  );
-
-  const UploadFlow = () => {
-    const isGenerateDisabled = status === AppStatus.LOADING || !imageFile || !motionPrompt;
-    return (
-        <div className="space-y-6">
-            <button onClick={() => setMode(AppMode.SELECT)} className="text-sm text-gray-400 hover:text-white transition-colors mb-4">&lt; モード選択に戻る</button>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <FileUpload label="① 楽曲をアップロード" acceptedTypes="audio/mpeg,audio/wav,audio/x-wav" file={audioFile} onFileChange={setAudioFile} isAudio={true} />
-                <FileUpload label="② 画像をアップロード" acceptedTypes="image/png,image/jpeg" file={imageFile} onFileChange={setImageFile} />
-            </div>
-            <div>
-                <label htmlFor="upload-prompt" className="block text-sm font-medium text-gray-300 mb-2">③ アニメーションの指示を入力 (プロンプト)</label>
-                <textarea id="upload-prompt" value={motionPrompt} onChange={(e) => setMotionPrompt(e.target.value)} placeholder="例：口を大きく開けて情熱的に歌っている。背景にはサイバーパンクな街並み。" rows={4} className="w-full bg-gray-700 border-gray-600 rounded-lg p-3 focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition" />
-            </div>
-            {renderAnimationOptions()}
-            {renderLipSyncToggle()}
-            {error && <ErrorMessage message={error} />}
-            <button onClick={handleGenerateVideo} disabled={isGenerateDisabled} className={`w-full flex items-center justify-center text-lg font-semibold py-3 px-6 rounded-lg transition-all duration-300 ${isGenerateDisabled ? 'bg-gray-600 text-gray-400 cursor-not-allowed' : 'bg-gradient-to-r from-purple-500 to-pink-600 hover:from-purple-600 hover:to-pink-700 shadow-lg hover:shadow-purple-500/50 transform hover:-translate-y-1'}`}>
-                <SparklesIcon className="h-6 w-6 mr-2" />ビデオを生成する
-            </button>
-        </div>
-    );
-  };
-  
-  const GenerateFlow = () => {
-    const renderStepContent = () => {
-        switch(step) {
-            case GenerationStep.LYRICS: return (
-                <div>
-                    <h3 className="text-xl font-semibold mb-2">① 歌詞のテーマを入力</h3>
-                    <p className="text-gray-400 mb-4">AIがあなたのためのオリジナル歌詞を生成します。</p>
-                    <div className="mb-4">
-                        <label className="block text-sm font-medium text-gray-400 mb-2">生成する言語</label>
-                        <div className="flex bg-gray-700 rounded-lg p-1">
-                            <button onClick={() => setLanguage('ja')} className={`flex-1 py-2 text-sm font-semibold rounded-md transition-colors ${language === 'ja' ? 'bg-purple-600 text-white' : 'text-gray-300 hover:bg-gray-600'}`}>日本語</button>
-                            <button onClick={() => setLanguage('en')} className={`flex-1 py-2 text-sm font-semibold rounded-md transition-colors ${language === 'en' ? 'bg-purple-600 text-white' : 'text-gray-300 hover:bg-gray-600'}`}>English</button>
-                        </div>
-                    </div>
-                    <div className="flex justify-between items-center mb-2">
-                         <label htmlFor="lyric-theme" className="block text-sm font-medium text-gray-400">テーマ</label>
-                        <button onClick={handleGenerateTheme} disabled={isGeneratingTheme} className="text-sm text-purple-400 hover:text-purple-300 transition-colors flex items-center disabled:text-gray-500 disabled:cursor-not-allowed">
-                            <Wand2Icon className="h-4 w-4 mr-1" />{isGeneratingTheme ? '生成中...' : 'テーマをAIに考えてもらう'}
-                        </button>
-                    </div>
-                    <textarea id="lyric-theme" value={lyricTheme} onChange={(e) => setLyricTheme(e.target.value)} placeholder="例：雨上がりの虹、未来への希望" rows={3} className="w-full bg-gray-700 border-gray-600 rounded-lg p-3 focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition mb-4"/>
-                    {error && <ErrorMessage message={error} />}
-                    <button onClick={handleGenerateLyrics} disabled={isGeneratingLyrics || !lyricTheme} className={`w-full flex items-center justify-center font-semibold py-2 px-4 rounded-lg transition-all ${!lyricTheme || isGeneratingLyrics ? 'bg-gray-600 cursor-not-allowed' : 'bg-purple-600 hover:bg-purple-700'}`}>
-                        {isGeneratingLyrics ? '生成中...' : <><SparklesIcon className="h-5 w-5 mr-2" />歌詞を生成する</>}
-                    </button>
-                </div>
-            );
-            case GenerationStep.PRODUCTION: return (
-                <div>
-                    <h3 className="text-xl font-semibold mb-2">② 楽曲作成＆ビデオ生成</h3>
-                    <p className="text-gray-400 mb-6">生成された歌詞で楽曲を作成・アップロードし、各シーンのビデオを生成しましょう。</p>
-
-                    <div className="space-y-4 mb-6">
-                        <InputField label="TITLE" value={generatedTitle} onChange={setGeneratedTitle} copyValue={generatedTitle} />
-                        <InputField label="MUSIC STYLE" value={generatedMusicStyle} onChange={setGeneratedMusicStyle} copyValue={generatedMusicStyle} />
-                        <div>
-                            <label className="block text-xs text-purple-400 font-semibold tracking-wider mb-1">LYRICS</label>
-                            <LyricsDisplay lyrics={generatedLyrics} />
-                            <button onClick={() => navigator.clipboard.writeText(generatedLyrics)} className="w-full mt-2 bg-gray-600 hover:bg-gray-500 py-2 rounded-lg text-sm flex items-center justify-center">
-                                <ClipboardCopyIcon className="h-4 w-4 mr-2" />歌詞をコピー
-                            </button>
-                        </div>
-                    </div>
-                    
-                    <div className="bg-gray-900/50 p-4 rounded-lg mb-6 border border-gray-700">
-                      <h4 className="font-semibold text-purple-300 mb-3">楽曲作成ガイド</h4>
-                      <ol className="list-decimal list-inside space-y-2 text-sm text-gray-300">
-                          <li>上のボタンから歌詞などをコピーし、Suno AIで曲を作成します。</li>
-                          <li>完成した楽曲をMP3形式などでダウンロードします。</li>
-                          <li>この画面に戻り、下のエリアからファイルをアップロードします。</li>
-                      </ol>
-                       <a href="https://suno.com/" target="_blank" rel="noopener noreferrer" className="w-full mt-4 flex items-center justify-center font-semibold py-2 px-4 rounded-lg transition-all bg-green-600 hover:bg-green-700 text-white shadow-lg hover:shadow-green-500/50">
-                        Suno AI で楽曲を作成する<ExternalLinkIcon className="h-5 w-5 ml-2" />
-                      </a>
-                    </div>
-                    <FileUpload label="完成した楽曲ファイルをアップロード" acceptedTypes="audio/mpeg,audio/wav,audio/x-wav" file={audioFile} onFileChange={setAudioFile} isAudio={true} />
-                
-                    <div className="mt-8 pt-6 border-t border-gray-700">
-                        <h3 className="text-xl font-semibold mb-2">③ シーンごとのビデオクリップ</h3>
-                        <p className="text-gray-400 mb-4">AIが生成したプロンプトを編集し、シーンごとにビデオを生成できます。</p>
-                        
-                        {isGeneratingPrompts ? (
-                            <div className="flex items-center justify-center p-6 bg-gray-700/50 rounded-lg">
-                                <div className="w-6 h-6 border-4 border-purple-400 border-t-transparent rounded-full animate-spin mr-3"></div>
-                                <span>シーンのプロンプトを生成中...</span>
-                            </div>
-                        ) : error && !scenes.length ? (
-                            <ErrorMessage message={error} />
-                        ) : scenes.length > 0 && (
-                            <div className="space-y-4 mb-6">
-                                {scenes.map(scene => <SceneEditorCard 
-                                    key={scene.id} 
-                                    scene={scene}
-                                    isGeneratingClips={isGeneratingClips}
-                                    onGenerateClip={handleGenerateSingleClip}
-                                    onUpdateScene={updateScene}
-                                />)}
-                                
-                                <div className="bg-gray-900/50 p-4 rounded-lg border border-gray-700 space-y-4">
-                                    <div>
-                                        <label htmlFor="generation-delay" className="flex items-center text-sm font-medium text-gray-300 mb-2">
-                                            <ClockIcon className="w-5 h-5 mr-2 text-purple-400" />
-                                            生成間隔（分）
-                                        </label>
-                                        <input
-                                            id="generation-delay"
-                                            type="number"
-                                            value={generationDelay}
-                                            onChange={(e) => setGenerationDelay(Math.max(0, parseInt(e.target.value, 10)))}
-                                            min="0"
-                                            disabled={isGeneratingClips}
-                                            className="w-full bg-gray-700 border-gray-600 rounded-lg p-2 focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition disabled:bg-gray-800 disabled:cursor-not-allowed"
-                                        />
-                                        <p className="text-xs text-gray-500 mt-2">
-                                            無料枠のAPI制限を避けるため、各ビデオ生成の間に遅延を設定します。1分以上を推奨します。
-                                        </p>
-                                    </div>
-                                    {isGeneratingClips ? (
-                                      <button onClick={handleStopGeneration} className="w-full flex items-center justify-center text-lg font-semibold py-3 px-6 rounded-lg transition-all duration-300 bg-red-600 hover:bg-red-700 shadow-lg">
-                                        <StopCircleIcon className="h-6 w-6 mr-2" />
-                                        生成を中止
-                                      </button>
-                                    ) : (
-                                      <button onClick={handleGenerateAllClips} disabled={scenes.filter(s => s.status !== 'completed').length === 0} className={`w-full flex items-center justify-center text-lg font-semibold py-3 px-6 rounded-lg transition-all duration-300 ${scenes.filter(s => s.status !== 'completed').length === 0 ? 'bg-gray-600 cursor-not-allowed' : 'bg-gradient-to-r from-purple-500 to-pink-600 hover:from-purple-600 hover:to-pink-700 shadow-lg'}`}>
-                                        <SparklesIcon className="h-6 w-6 mr-2" />
-                                        {`残り${scenes.filter(s => s.status !== 'completed').length}件をまとめて生成`}
-                                      </button>
-                                    )}
-                                    {(isGeneratingClips || generationStatusMessage) && (
-                                        <div className="text-center text-sm text-purple-300 pt-2">
-                                            <p>{generationStatusMessage}</p>
-                                            {countdown > 0 && <p className="font-mono text-lg">{Math.floor(countdown / 60)}:{(countdown % 60).toString().padStart(2, '0')}</p>}
-                                        </div>
-                                    )}
-                                </div>
-                            </div>
-                        )}
-                    </div>
-                </div>
-            );
-        }
-    }
-    
-    const steps = [ {name: '歌詞', icon: Wand2Icon}, {name: '制作', icon: FilmIcon} ];
-
-    return (
-        <div>
-            <button onClick={() => setMode(AppMode.SELECT)} className="text-sm text-gray-400 hover:text-white transition-colors mb-4">&lt; モード選択に戻る</button>
-            <div className="mb-8">
-                <ol className="flex items-center w-full">
-                    {steps.map((s, index) => (
-                         <li key={s.name} className={`flex w-full items-center ${index < steps.length - 1 ? "after:content-[''] after:w-full after:h-1 after:border-b after:border-4 after:inline-block" : ''} ${index <= step ? 'text-purple-400 after:border-purple-600' : 'text-gray-500 after:border-gray-700'}`}>
-                           <span className={`flex flex-col items-center justify-center w-12 h-12 rounded-full shrink-0 ${index <= step ? 'bg-purple-800' : 'bg-gray-700'}`}>
-                               <s.icon className="w-6 h-6" />
-                           </span>
-                        </li>
-                    ))}
-                </ol>
-            </div>
-            {renderStepContent()}
-        </div>
-    );
-  };
-  
-  const InputField = ({ label, value, onChange, copyValue }: { label: string, value: string, onChange: (v: string) => void, copyValue: string }) => (
-    <div>
-        <label className="block text-xs text-purple-400 font-semibold tracking-wider mb-1">{label}</label>
-        <div className="flex items-center gap-2">
-            <input type="text" value={value} onChange={e => onChange(e.target.value)} className="flex-grow w-full bg-gray-700 border-gray-600 rounded-lg px-3 py-2 focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition" />
-            <button onClick={() => navigator.clipboard.writeText(copyValue)} title={`Copy ${label}`} className="p-2 bg-gray-600 hover:bg-gray-500 rounded-lg"><ClipboardCopyIcon className="h-5 w-5" /></button>
-        </div>
-    </div>
-  );
-  
-  const renderAnimationOptions = () => (
-    <div>
-      <label className="block text-sm font-medium text-gray-300 mb-2">動きとエフェクトを追加 (オプション)</label>
-      <div className="bg-gray-700/50 p-4 rounded-lg space-y-4">
-        <div>
-          <label htmlFor="camera-work" className="block text-xs font-medium text-gray-400 mb-1">カメラワーク</label>
-          <select id="camera-work" value={cameraWork} onChange={e => setCameraWork(e.target.value)} className="w-full bg-gray-600 border-gray-500 rounded-md p-2 focus:ring-1 focus:ring-purple-500 transition">
-            {Object.entries(cameraWorkOptions).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-          </select>
-        </div>
-        <div>
-          <label className="block text-xs font-medium text-gray-400 mb-1">エフェクト</label>
-          <div className="grid grid-cols-2 gap-2">
-            {Object.entries(effectOptions).map(([value, label]) => (
-              <button key={value} onClick={() => handleEffectChange(value)} className={`text-sm text-left w-full p-2 rounded-md transition-colors ${effects.includes(value) ? 'bg-purple-600 text-white' : 'bg-gray-600 hover:bg-gray-500'}`}>
-                {label}
-              </button>
-            ))}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-
-  const renderLipSyncToggle = () => (
-    <div className="flex items-center justify-between bg-gray-700/50 p-4 rounded-lg">
-      <div>
-        <label htmlFor="lip-sync-toggle" className="font-medium text-gray-200">
-          口パク（リップシンク）を試す (β)
-        </label>
-        <p className="text-xs text-gray-400">
-          AIが歌っているような口の動きを生成します。顔がはっきり写っている画像で最も効果的です。
-        </p>
-      </div>
-      <label htmlFor="lip-sync-toggle" className="relative inline-flex items-center cursor-pointer">
-        <input type="checkbox" id="lip-sync-toggle" className="sr-only peer" checked={lipSync} onChange={(e) => setLipSync(e.target.checked)} />
-        <div className="w-11 h-6 bg-gray-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-purple-800 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-purple-600"></div>
-      </label>
-    </div>
-  );
-  
-  const ErrorMessage = ({ message }: { message: string }) => (
-    <div className="bg-red-900/50 border border-red-500 text-red-300 px-4 py-3 rounded-lg relative" role="alert">
-      <div className="flex items-center">
-        <AlertTriangleIcon className="h-5 w-5 mr-3" />
-        <span className="block sm:inline">{message}</span>
-      </div>
-    </div>
-  );
-
   const SettingsModal = () => (
       <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
         <div className="bg-gray-800 border border-gray-600 rounded-2xl shadow-xl w-full max-w-md">

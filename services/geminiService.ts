@@ -78,6 +78,18 @@ interface ScenePromptGenerationResult {
   animationPrompt: string;
 }
 
+export const translateText = async (text: string, targetLanguage: 'ja' | 'en'): Promise<string> => {
+  if (!process.env.API_KEY) throw new Error("API_KEY environment variable not set.");
+  if (!text.trim()) return "";
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  
+  const languageName = targetLanguage === 'ja' ? 'Japanese' : 'English';
+  const prompt = `Translate the following text to ${languageName}. Output only the translated text, without any additional explanations or formatting.\n\nText to translate:\n"""\n${text}\n"""`;
+
+  const response = await ai.models.generateContent({ model: 'gemini-2.5-flash', contents: prompt });
+  return response.text.trim();
+};
+
 export const generateScenePrompts = async (lyrics: string, style: string, language: 'ja' | 'en'): Promise<ScenePromptGenerationResult[]> => {
   if (!process.env.API_KEY) throw new Error("API_KEY environment variable not set.");
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
