@@ -7,6 +7,7 @@ declare const FFmpeg: any;
 interface VideoResultProps {
   scenes: Scene[];
   videoUrls?: string[]; // Optional, for upload flow
+  audioFile: File | null;
   audioUrl: string | null;
   onReset: () => void;
   generatedTitle: string;
@@ -74,7 +75,7 @@ const CombineSection: React.FC<{
 );
 
 
-const VideoResult: React.FC<VideoResultProps> = ({ scenes, videoUrls: singleVideoUrl, audioUrl, onReset, generatedTitle }) => {
+const VideoResult: React.FC<VideoResultProps> = ({ scenes, videoUrls: singleVideoUrl, audioFile, audioUrl, onReset, generatedTitle }) => {
   const [currentVideoIndex, setCurrentVideoIndex] = useState(0);
   const videoRef = useRef<HTMLVideoElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -208,7 +209,9 @@ const VideoResult: React.FC<VideoResultProps> = ({ scenes, videoUrls: singleVide
       
       {audioUrl && (
         <div className="w-full">
-            <p className="text-sm text-gray-400 mb-2 text-center">アップロードした楽曲を再生しています。</p>
+            <p className="text-sm text-gray-400 mb-2 text-center">
+              楽曲ファイル: <span className="font-semibold text-gray-300">{audioFile?.name || '不明なファイル'}</span>
+            </p>
             <audio ref={audioRef} src={audioUrl} controls className="w-full" />
         </div>
       )}
@@ -263,7 +266,7 @@ const VideoResult: React.FC<VideoResultProps> = ({ scenes, videoUrls: singleVide
       </button>
 
       <p className="text-xs text-gray-500 text-center pt-2">
-        注意：プレビュー中のビデオには音声が含まれていません。結合・書き出し後のファイルには音声が含まれます。
+        注意：プレビューでは、生成された無音ビデオとあなたがアップロードした楽曲を同時に再生しています。「結合して書き出す」ボタンで作成されるビデオには、この楽曲が合成されます。
       </p>
     </div>
   );

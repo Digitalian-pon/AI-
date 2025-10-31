@@ -16,12 +16,43 @@ export const fileToBase64 = (file: File): Promise<string> => {
   });
 };
 
-export const generateTheme = async (language: 'ja' | 'en'): Promise<string> => {
+export const generateTheme = async (options: { language: 'ja' | 'en', category: string, keywords?: string }): Promise<string> => {
   if (!process.env.API_KEY) throw new Error("API_KEY environment variable not set.");
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-  const prompt = language === 'ja'
-    ? `人々に勇気や感動、未来への希望を与えるような、独創的で感情豊かな楽曲テーマを1つだけ、短いフレーズで提案してください。ポップス、ロック、バラード、エレクトロなど、様々なジャンルを想定してください。`
-    : `Please suggest a single creative, emotional, and inspiring song theme in a short phrase that gives people courage and hope for the future. Consider various genres such as pop, rock, ballad, and electronic music.`;
+
+  let prompt: string;
+  const baseInstructionJa = "生成AIであるという自己紹介や前置きは一切不要です。テーマのフレーズのみを返してください。";
+  const baseInstructionEn = "Do not include any self-introduction or preamble about being a generative AI. Return only the theme phrase.";
+
+  if (options.keywords) {
+    prompt = options.language === 'ja'
+      ? `以下のキーワードを基に、独創的で想像力を掻き立てる楽曲のテーマを1つ、短いフレーズで提案してください。ありきたりな表現は避け、具体的でユニークなアイデアを重視してください。\nキーワード: ${options.keywords}\n${baseInstructionJa}`
+      : `Based on the following keywords, please suggest a single creative and imaginative song theme in a short phrase. Avoid clichés and focus on specific and unique ideas.\nKeywords: ${options.keywords}\n${baseInstructionEn}`;
+  } else {
+    switch (options.category) {
+      case 'emotional':
+        prompt = options.language === 'ja'
+          ? `世界中の人々の心を揺さぶり、国境や文化を越えて共感を呼ぶような、深遠で感動的な楽曲テーマを1つ、短いフレーズで提案してください。個人的な喪失の乗り越え、人類愛、世代を超えた繋がり、逆境の中の希望など、普遍的な人間の経験に焦点を当ててください。\n${baseInstructionJa}`
+          : `Suggest one profound and moving song theme in a short phrase that can stir the hearts of people worldwide and evoke empathy across borders and cultures. Focus on universal human experiences such as overcoming personal loss, humanitarian love, intergenerational connections, or hope in the face of adversity.\n${baseInstructionEn}`;
+        break;
+      case 'trending':
+        prompt = options.language === 'ja'
+          ? `現在のSNS（TikTok, Instagram, YouTubeなど）でバイラルヒットを狙えるような、キャッチーで共感性の高い楽曲テーマを1つ、短いフレーズで提案してください。短い動画で使いやすく、多くの人が「自分のことだ」と感じるような、現代的な悩み、あるあるネタ、意外な視点などを盛り込んでください。\n${baseInstructionJa}`
+          : `Suggest one catchy and highly relatable song theme in a short phrase that could become a viral hit on current social media (TikTok, Instagram, YouTube, etc.). It should be suitable for short-form videos and tap into modern-day struggles, relatable situations, or surprising perspectives that would make many people feel "this is about me."\n${baseInstructionEn}`;
+        break;
+      case 'love':
+        prompt = options.language === 'ja'
+          ? `ありきたりではない、具体的で心に刺さるような「恋愛」または「失恋」の楽曲テーマを1つ、短いフレーズで提案してください。「会いたい」「好き」のような直接的な言葉を使わずに、情景や比喩、独特の感情表現で、関係の美しさ、複雑さ、または終わりの切なさを描いてください。\n${baseInstructionJa}`
+          : `Suggest one non-clichéd, specific, and poignant song theme about "love" or "heartbreak" in a short phrase. Instead of direct words like "I miss you" or "I love you," depict the beauty, complexity, or sorrow of a relationship's end through scenery, metaphors, or unique emotional expressions.\n${baseInstructionEn}`;
+        break;
+      case 'random':
+      default:
+        prompt = options.language === 'ja'
+          ? `独創的で想像力を掻き立てる楽曲のテーマを1つだけ、短いフレーズで提案してください。喜び、悲しみ、愛、喪失、冒険、日常の発見、SF的な空想など、幅広い感情やジャンルを網羅するように、毎回全く異なる視点から生成してください。ありきたりな表現は避け、具体的でユニークなアイデアを重視してください。\n${baseInstructionJa}`
+          : `Please suggest a single creative and imaginative song theme in a short phrase. The theme should be generated from a completely different perspective each time, covering a wide range of emotions and genres such as joy, sadness, love, loss, adventure, everyday discoveries, and sci-fi fantasies. Avoid clichés and focus on specific and unique ideas.\n${baseInstructionEn}`;
+        break;
+    }
+  }
 
   const response = await ai.models.generateContent({ model: 'gemini-2.5-flash', contents: prompt });
   return response.text.trim().replace(/^"|"$/g, '');

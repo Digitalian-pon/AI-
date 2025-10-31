@@ -7,7 +7,7 @@ import FileUpload from './components/FileUpload';
 import Loader from './components/Loader';
 import VideoResult from './components/VideoResult';
 import LyricsDisplay from './components/LyricsDisplay';
-import { SparklesIcon, AlertTriangleIcon, Wand2Icon, MusicIcon, FileImageIcon, FilmIcon, UploadCloudIcon, ClipboardCopyIcon, ExternalLinkIcon, KeyRoundIcon, ListVideoIcon, RotateCcwIcon, ClockIcon, StopCircleIcon, SettingsIcon, XIcon, LanguagesIcon, ArrowDownIcon } from './components/Icons';
+import { SparklesIcon, AlertTriangleIcon, Wand2Icon, MusicIcon, FileImageIcon, FilmIcon, UploadCloudIcon, ClipboardCopyIcon, ExternalLinkIcon, KeyRoundIcon, ListVideoIcon, RotateCcwIcon, ClockIcon, StopCircleIcon, SettingsIcon, XIcon, LanguagesIcon, ArrowDownIcon, FlameIcon, HeartIcon } from './components/Icons';
 
 const cameraWorkOptions = {
   '': 'なし', 'slow zoom in': 'ズームイン', 'slow zoom out': 'ズームアウト',
@@ -430,7 +430,7 @@ const UploadFlow: React.FC<{
                   口パク（リップシンク）を試す (β)
                 </label>
                 <p className="text-xs text-gray-400">
-                  AIが歌っているような口の動きを生成します。顔がはっきり写っている画像で最も効果的です。
+                  AIが歌っているような口の動きを生成します。<strong className="text-yellow-400">AIは楽曲を聴いていないため、実際の歌詞とは同期しません。</strong>顔がはっきり写っている画像で最も効果的です。
                 </p>
               </div>
               <label htmlFor="lip-sync-toggle" className="relative inline-flex items-center cursor-pointer">
@@ -453,8 +453,10 @@ const GenerateFlow: React.FC<{
     setLanguage: (lang: 'ja' | 'en') => void;
     lyricTheme: string;
     setLyricTheme: (theme: string) => void;
-    handleGenerateTheme: () => void;
-    isGeneratingTheme: boolean;
+    handleGenerateTheme: (category: string) => void;
+    generatingThemeCategory: string | null;
+    themeKeywords: string;
+    setThemeKeywords: (keywords: string) => void;
     error: string;
     handleGenerateLyrics: () => void;
     isGeneratingLyrics: boolean;
@@ -479,6 +481,15 @@ const GenerateFlow: React.FC<{
     onTranslate: (text: string, targetLanguage: 'ja' | 'en') => Promise<string>;
 }> = (props) => {
     const renderStepContent = () => {
+        const isAnyThemeGenerating = !!props.generatingThemeCategory;
+
+        const themeCategories = [
+            { id: 'emotional', label: '感動的', icon: SparklesIcon, color: 'text-purple-400' },
+            { id: 'trending', label: 'SNSで話題', icon: FlameIcon, color: 'text-pink-400' },
+            { id: 'love', label: '恋愛・失恋', icon: HeartIcon, color: 'text-red-400' },
+            { id: 'random', label: 'おまかせ', icon: Wand2Icon, color: 'text-gray-400' },
+        ];
+
         switch (props.step) {
             case GenerationStep.LYRICS: return (
                 <div>
@@ -491,13 +502,49 @@ const GenerateFlow: React.FC<{
                             <button onClick={() => props.setLanguage('en')} className={`flex-1 py-2 text-sm font-semibold rounded-md transition-colors ${props.language === 'en' ? 'bg-purple-600 text-white' : 'text-gray-300 hover:bg-gray-600'}`}>English</button>
                         </div>
                     </div>
-                    <div className="flex justify-between items-center mb-2">
-                        <label htmlFor="lyric-theme" className="block text-sm font-medium text-gray-400">テーマ</label>
-                        <button onClick={props.handleGenerateTheme} disabled={props.isGeneratingTheme} className="text-sm text-purple-400 hover:text-purple-300 transition-colors flex items-center disabled:text-gray-500 disabled:cursor-not-allowed">
-                            <Wand2Icon className="h-4 w-4 mr-1" />{props.isGeneratingTheme ? '生成中...' : 'テーマをAIに考えてもらう'}
-                        </button>
+                    
+                    <label htmlFor="lyric-theme" className="block text-sm font-medium text-gray-400 mb-2">テーマ</label>
+                    <textarea id="lyric-theme" value={props.lyricTheme} onChange={(e) => props.setLyricTheme(e.target.value)} placeholder="ここにテーマを入力するか、下のヘルパーで生成してください" rows={2} className="w-full bg-gray-700 border-gray-600 rounded-lg p-3 focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition mb-4"/>
+
+                    <div className="bg-gray-900/50 p-4 rounded-lg border border-gray-700 space-y-4 mb-4">
+                        <h4 className="font-semibold text-purple-300">テーマ生成ヘルパー</h4>
+                        <div className="flex items-center gap-2">
+                            <input 
+                                type="text" 
+                                value={props.themeKeywords} 
+                                onChange={e => props.setThemeKeywords(e.target.value)} 
+                                placeholder="キーワード (例: 宇宙, 孤独, 猫)"
+                                disabled={isAnyThemeGenerating}
+                                className="flex-grow w-full text-sm bg-gray-700 border-gray-600 rounded-lg px-3 py-2 focus:ring-1 focus:ring-purple-500 focus:border-purple-500 transition disabled:bg-gray-800"
+                            />
+                            <button 
+                                onClick={() => props.handleGenerateTheme('keywords')}
+                                disabled={!props.themeKeywords || isAnyThemeGenerating}
+                                className="flex items-center gap-2 px-3 py-2 text-sm font-semibold bg-gray-600 rounded-md hover:bg-gray-500 transition-colors disabled:bg-gray-700 disabled:text-gray-500 disabled:cursor-not-allowed whitespace-nowrap"
+                            >
+                                {props.generatingThemeCategory === 'keywords' ? <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div> : <SparklesIcon className="w-4 h-4" />}
+                                生成
+                            </button>
+                        </div>
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                           {themeCategories.map(cat => (
+                                <button 
+                                    key={cat.id} 
+                                    onClick={() => props.handleGenerateTheme(cat.id)}
+                                    disabled={isAnyThemeGenerating}
+                                    className="flex flex-col items-center justify-center text-center p-3 rounded-lg transition-colors disabled:bg-gray-800/50 disabled:text-gray-500 disabled:cursor-not-allowed bg-gray-800 hover:bg-gray-700"
+                                >
+                                    {props.generatingThemeCategory === cat.id ? (
+                                        <div className="w-6 h-6 border-2 border-white border-t-transparent rounded-full animate-spin mb-1"></div>
+                                    ) : (
+                                        <cat.icon className={`w-6 h-6 ${cat.color} mb-1`} />
+                                    )}
+                                    <span className="text-xs font-semibold">{cat.label}</span>
+                                </button>
+                            ))}
+                        </div>
                     </div>
-                    <textarea id="lyric-theme" value={props.lyricTheme} onChange={(e) => props.setLyricTheme(e.target.value)} placeholder="例：雨上がりの虹、未来への希望" rows={3} className="w-full bg-gray-700 border-gray-600 rounded-lg p-3 focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition mb-4"/>
+
                     {props.error && <ErrorMessage message={props.error} />}
                     <button onClick={props.handleGenerateLyrics} disabled={props.isGeneratingLyrics || !props.lyricTheme} className={`w-full flex items-center justify-center font-semibold py-2 px-4 rounded-lg transition-all ${!props.lyricTheme || props.isGeneratingLyrics ? 'bg-gray-600 cursor-not-allowed' : 'bg-purple-600 hover:bg-purple-700'}`}>
                         {props.isGeneratingLyrics ? '生成中...' : <><SparklesIcon className="h-5 w-5 mr-2" />歌詞を生成する</>}
@@ -649,7 +696,8 @@ const App: React.FC = () => {
   const [generatedMusicStyle, setGeneratedMusicStyle] = useState<string>('');
   const [generatedLyrics, setGeneratedLyrics] = useState<string>('');
   const [isGeneratingLyrics, setIsGeneratingLyrics] = useState<boolean>(false);
-  const [isGeneratingTheme, setIsGeneratingTheme] = useState<boolean>(false);
+  const [themeKeywords, setThemeKeywords] = useState<string>('');
+  const [generatingThemeCategory, setGeneratingThemeCategory] = useState<string | null>(null);
   
   const [scenes, setScenes] = useState<Scene[]>([]);
   const [isGeneratingPrompts, setIsGeneratingPrompts] = useState(false);
@@ -807,13 +855,18 @@ const App: React.FC = () => {
     }
   }, [imageFile, motionPrompt, audioFile, lipSync, cameraWork, effects, videoModel]);
 
-  const handleGenerateTheme = async () => {
-    setIsGeneratingTheme(true);
+  const handleGenerateTheme = async (category: string) => {
+    setGeneratingThemeCategory(category);
     setError('');
     try {
-      setLyricTheme(await generateTheme(language));
-    } catch (err) { setError(getFriendlyErrorMessage(err)); } 
-    finally { setIsGeneratingTheme(false); }
+        const keywordsToUse = category === 'keywords' ? themeKeywords : undefined;
+        const theme = await generateTheme({ language, category, keywords: keywordsToUse });
+        setLyricTheme(theme);
+    } catch (err) {
+        setError(getFriendlyErrorMessage(err));
+    } finally {
+        setGeneratingThemeCategory(null);
+    }
   };
 
   const handleGenerateScenePrompts = async (lyrics: string, style: string) => {
@@ -934,6 +987,7 @@ const App: React.FC = () => {
     setStep(GenerationStep.LYRICS);
     setLanguage('ja');
     setLyricTheme('');
+    setThemeKeywords('');
     setGeneratedLyrics('');
     setGeneratedTitle('');
     setGeneratedMusicStyle('');
@@ -968,9 +1022,9 @@ const App: React.FC = () => {
     
     if (status === AppStatus.SUCCESS) {
         if(mode === AppMode.GENERATE) {
-            return <VideoResult scenes={scenes} audioUrl={audioObjectUrl} onReset={handleReset} generatedTitle={generatedTitle} />;
+            return <VideoResult scenes={scenes} audioFile={audioFile} audioUrl={audioObjectUrl} onReset={handleReset} generatedTitle={generatedTitle} />;
         }
-        if(generatedVideoUrl) return <VideoResult scenes={[]} videoUrls={[generatedVideoUrl]} audioUrl={audioObjectUrl} onReset={handleReset} generatedTitle="Generated Video" />;
+        if(generatedVideoUrl) return <VideoResult scenes={[]} videoUrls={[generatedVideoUrl]} audioFile={audioFile} audioUrl={audioObjectUrl} onReset={handleReset} generatedTitle="Generated Video" />;
     }
 
     switch (mode) {
@@ -1005,7 +1059,9 @@ const App: React.FC = () => {
         lyricTheme={lyricTheme}
         setLyricTheme={setLyricTheme}
         handleGenerateTheme={handleGenerateTheme}
-        isGeneratingTheme={isGeneratingTheme}
+        generatingThemeCategory={generatingThemeCategory}
+        themeKeywords={themeKeywords}
+        setThemeKeywords={setThemeKeywords}
         error={error}
         handleGenerateLyrics={handleGenerateLyrics}
         isGeneratingLyrics={isGeneratingLyrics}
