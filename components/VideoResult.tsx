@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useRef } from 'react';
 import { DownloadIcon, RotateCcwIcon, PackageCheckIcon, SparklesIcon, CombineIcon } from './Icons';
 import { Scene } from '../types';
@@ -31,7 +32,7 @@ const CombineSection: React.FC<{
     <div className="flex items-center justify-between mb-4">
       <h3 className="text-xl font-semibold flex items-center gap-3">
         <CombineIcon className="w-7 h-7 text-purple-400" />
-        最終ビデオを書き出す
+        ビデオを結合して書き出す
       </h3>
       {finalVideoUrl && (
         <a 
@@ -45,7 +46,7 @@ const CombineSection: React.FC<{
       )}
     </div>
     <p className="text-sm text-gray-400 mb-5">
-      すべてのビデオクリップと楽曲を1つのファイルに結合します。この処理はブラウザ内で完結し、完了まで数分かかることがあります。
+      生成されたすべてのクリップと楽曲を、1本のミュージックビデオに結合します。この処理はお使いのブラウザ内で安全に行われ、完了まで数分かかることがあります。
     </p>
     
     {!finalVideoUrl && (
@@ -185,7 +186,7 @@ const VideoResult: React.FC<VideoResultProps> = ({ scenes, videoUrls: singleVide
   return (
     <div className="flex flex-col items-center space-y-6">
       <h2 className="text-2xl font-bold text-center text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-pink-600">
-        ビデオが完成しました！
+        🎉 ビデオが完成しました！ 🎉
       </h2>
       
       <div className="w-full aspect-video bg-black rounded-lg overflow-hidden shadow-lg relative">
@@ -229,6 +230,7 @@ const VideoResult: React.FC<VideoResultProps> = ({ scenes, videoUrls: singleVide
                     すべてダウンロード
                 </button>
             </div>
+            <p className="text-xs text-gray-400 mb-3 -mt-3">各シーンのビデオクリップを個別のファイルとしてダウンロードします。</p>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               {displayVideos.map((video, index) => (
                   <a
@@ -266,7 +268,7 @@ const VideoResult: React.FC<VideoResultProps> = ({ scenes, videoUrls: singleVide
       </button>
 
       <p className="text-xs text-gray-500 text-center pt-2">
-        注意：プレビューでは、生成された無音ビデオとあなたがアップロードした楽曲を同時に再生しています。「結合して書き出す」ボタンで作成されるビデオには、この楽曲が合成されます。
+        プレビューでは無音のビデオクリップと楽曲を同時に再生しています。「結合して書き出す」ことで、音声が合成された1本のビデオが完成します。
       </p>
     </div>
   );
