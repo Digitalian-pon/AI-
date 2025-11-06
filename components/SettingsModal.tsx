@@ -80,10 +80,11 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, delay, s
             <input
               type="number"
               id="delay-input"
-              value={localDelay}
-              onChange={(e) => setLocalDelay(Math.max(0, parseInt(e.target.value, 10) || 0))}
+              value={localDelay / 60000}
+              onChange={(e) => setLocalDelay(Math.max(0, parseFloat(e.target.value) || 0) * 60000)}
               className="mt-2 w-full bg-gray-700 border border-gray-600 rounded-md py-2 px-4 text-white placeholder-gray-500 focus:ring-purple-500 focus:border-purple-500"
               min="0"
+              step="0.1"
             />
             <p className="mt-2 text-xs text-gray-400">{t('settingsDelayDescription')}</p>
           </div>

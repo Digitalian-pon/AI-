@@ -1,16 +1,18 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { GoogleGenAI } from '@google/genai';
 import { fileToBase64 } from './services/geminiService';
-import { parseLyrics, generatePromptsFromLyrics, generateLyricsFromTheme, generateRandomThemeAndStyle } from './utils';
+import { parseLyrics, generatePromptsForScenes, generateLyricsFromTheme, generateRandomThemeAndStyle, generateTitleFromLyrics } from './utils';
 import { Scene } from './types';
 import FileUpload from './components/FileUpload';
 import LyricsDisplay from './components/LyricsDisplay';
 import Loader from './components/Loader';
 import VideoResult from './components/VideoResult';
+import SettingsModal from './components/SettingsModal';
 import { useI18n } from './i18n';
-import { KeyRoundIcon, SparklesIcon, AlertTriangleIcon, FilmIcon, Wand2Icon, MusicIcon, FileImageIcon, UploadCloudIcon, ClockIcon, XIcon, ClipboardCopyIcon, CheckIcon } from './components/Icons';
+import { KeyRoundIcon, SparklesIcon, AlertTriangleIcon, FilmIcon, Wand2Icon, MusicIcon, FileImageIcon, UploadCloudIcon, ClockIcon, XIcon, ClipboardCopyIcon, CheckIcon, SettingsIcon, ArrowRightIcon, PenSquareIcon } from './components/Icons';
 
 type VideoModel = 'veo-3.1-fast-generate-preview' | 'veo-3.1-generate-preview';
+type AppStep = 'welcome' | 'prepareLyrics' | 'uploadMedia' | 'review' | 'generating' | 'result';
 
 const ErrorMessage = ({ message }: { message: string }) => (
   <div className="bg-red-900/50 border border-red-500 text-red-300 px-4 py-3 rounded-lg relative max-w-lg mx-auto" role="alert">
@@ -61,20 +63,25 @@ const App: React.FC = () => {
   const [isKeySelected, setIsKeySelected] = useState<boolean>(false);
   const [error, setError] = useState<string>('');
   
-  const [step, setStep] = useState<'upload' | 'lyrics' | 'generating' | 'finished'>('upload');
+  const [step, setStep] = useState<AppStep>('welcome');
   const [audioFile, setAudioFile] = useState<File | null>(null);
   const [lyricsFile, setLyricsFile] = useState<File | null>(null);
   const [imageFiles, setImageFiles] = useState<File[]>([]);
   const [lyrics, setLyrics] = useState<string>('');
-  const [theme, setTheme] = useState<string>('');
+  const [theme, setTheme] = useState<string>(''); 
+  const [title, setTitle] = useState<string>(''); 
   const [isGeneratingLyrics, setIsGeneratingLyrics] = useState<boolean>(false);
-  const [isGeneratingTheme, setIsGeneratingTheme] = useState<boolean>(false);
+  const [isGeneratingTitle, setIsGeneratingTitle] = useState<boolean>(false);
   const [suggestedStyle, setSuggestedStyle] = useState<string>('');
-  const [copySuccess, setCopySuccess] = useState<boolean>(false);
+  const [styleCopySuccess, setStyleCopySuccess] = useState<boolean>(false);
+  const [lyricsCopySuccess, setLyricsCopySuccess] = useState<boolean>(false);
   const [scenes, setScenes] = useState<Scene[]>([]);
   const [finalVideoUrl, setFinalVideoUrl] = useState<string>('');
   const [statusMessage, setStatusMessage] = useState<string>('');
   const [generationProgress, setGenerationProgress] = useState(0);
+
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [delay, setDelay] = useState(0);
 
   const ffmpegRef = useRef<any>(null);
 
@@ -132,11 +139,7 @@ const App: React.FC = () => {
         setLyricsFile(file);
         if (file) {
             const reader = new FileReader();
-            reader.onload = (e) => {
-              setLyrics(e.target?.result as string);
-              setTheme('');
-              setSuggestedStyle('');
-            };
+            reader.onload = (e) => setLyrics(e.target?.result as string);
             reader.readAsText(file);
         } else {
             setLyrics('');
@@ -145,12 +148,34 @@ const App: React.FC = () => {
     if (type === 'image' && file) setImageFiles(prev => [...prev, file]);
   };
   
-  const handleStart = () => {
+  const handleGoToReview = async () => {
     if (!audioFile || !lyrics.trim() || imageFiles.length === 0) {
       setError(t('errorMissingFiles'));
       return;
     }
     setError('');
+    
+    let currentTitle = title;
+    if (!currentTitle.trim()) {
+      try {
+        setStatusMessage(t('statusGeneratingTitle'));
+        setIsGeneratingTitle(true);
+        const apiKey = getApiKey();
+        const ai = new GoogleGenAI({ apiKey });
+        const newTitle = await generateTitleFromLyrics(ai, lyrics, language);
+        setTitle(newTitle);
+        currentTitle = newTitle;
+      } catch(err) {
+         setError(`${t('errorTitleGeneration')} ${getFriendlyErrorMessage(err)}`);
+         setStatusMessage('');
+         setIsGeneratingTitle(false);
+         return;
+      } finally {
+        setStatusMessage('');
+        setIsGeneratingTitle(false);
+      }
+    }
+
     const parsedScenes = parseLyrics(lyrics);
     const scenesWithPlaceholders = parsedScenes.map((scene, index) => ({
       ...scene,
@@ -158,9 +183,10 @@ const App: React.FC = () => {
       prompt: t('promptGenerating'),
       image: imageFiles[index % imageFiles.length],
       status: 'pending' as const,
+      lipSync: true,
     }));
     setScenes(scenesWithPlaceholders);
-    setStep('lyrics');
+    setStep('review');
   };
 
   const generatePrompts = async () => {
@@ -168,7 +194,7 @@ const App: React.FC = () => {
       setStatusMessage(t('statusGeneratingPrompts'));
       const apiKey = getApiKey();
       const ai = new GoogleGenAI({ apiKey });
-      const prompts = await generatePromptsFromLyrics(ai, scenes.map(s => s.lyric));
+      const prompts = await generatePromptsForScenes(ai, scenes, title);
       const scenesWithPrompts = scenes.map((scene, index) => ({
         ...scene,
         prompt: prompts[index],
@@ -182,14 +208,14 @@ const App: React.FC = () => {
   }
 
   useEffect(() => {
-    if (step === 'lyrics' && scenes.length > 0) {
+    if (step === 'review' && scenes.length > 0 && scenes[0].prompt === t('promptGenerating')) {
       generatePrompts();
     }
-  }, [step]);
+  }, [step, scenes, t, title]);
   
   const handleGenerateTheme = async () => {
     setError('');
-    setIsGeneratingTheme(true);
+    setIsGeneratingTitle(true);
     setSuggestedStyle('');
     try {
       const apiKey = getApiKey();
@@ -200,7 +226,7 @@ const App: React.FC = () => {
     } catch (err) {
       setError(`${t('errorThemeGeneration')} ${getFriendlyErrorMessage(err)}`);
     } finally {
-      setIsGeneratingTheme(false);
+      setIsGeneratingTitle(false);
     }
   };
 
@@ -217,6 +243,7 @@ const App: React.FC = () => {
       const generatedLyrics = await generateLyricsFromTheme(ai, theme, language);
       setLyrics(generatedLyrics);
       setLyricsFile(null);
+      setTitle('');
     } catch (err) {
       setError(`${t('errorLyricsGeneration')} ${getFriendlyErrorMessage(err)}`);
     } finally {
@@ -224,21 +251,30 @@ const App: React.FC = () => {
     }
   };
 
-  const handleLyricsChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    setLyrics(e.target.value);
-  };
-  
-  const clearGeneratedLyrics = () => {
-    setLyrics('');
-    setTheme('');
-    setSuggestedStyle('');
-  };
-
   const handleCopyStyle = () => {
     if (!suggestedStyle) return;
     navigator.clipboard.writeText(suggestedStyle);
-    setCopySuccess(true);
-    setTimeout(() => setCopySuccess(false), 2000);
+    setStyleCopySuccess(true);
+    setTimeout(() => setStyleCopySuccess(false), 2000);
+  };
+  
+    const handleRegeneratePrompt = async (sceneId: number) => {
+    const sceneToRegenerate = scenes.find(s => s.id === sceneId);
+    if (!sceneToRegenerate) return;
+    setError('');
+    try {
+      const apiKey = getApiKey();
+      const ai = new GoogleGenAI({ apiKey });
+      const [newPrompt] = await generatePromptsForScenes(ai, [sceneToRegenerate], title);
+      
+      setScenes(prevScenes => 
+        prevScenes.map(s => 
+          s.id === sceneId ? { ...s, prompt: newPrompt } : s
+        )
+      );
+    } catch (err) {
+      setError(`${t('errorPromptGeneration')} ${getFriendlyErrorMessage(err)}`);
+    }
   };
 
   const generateSingleVideo = async (scene: Scene, apiKey: string): Promise<string> => {
@@ -284,6 +320,11 @@ const App: React.FC = () => {
         for (let i = 0; i < scenes.length; i++) {
             const currentScene = scenes[i];
             
+            if (delay > 0 && i > 0) {
+              setStatusMessage(t('statusWaiting', { delay: (delay / 60000).toFixed(1) }));
+              await new Promise(resolve => setTimeout(resolve, delay));
+            }
+
             setStatusMessage(t('statusGeneratingScene', { current: i + 1, total: scenes.length }));
             setScenes(prev => prev.map(s => s.id === currentScene.id ? { ...s, status: 'generating' } : s));
 
@@ -356,11 +397,11 @@ const App: React.FC = () => {
         setFinalVideoUrl(URL.createObjectURL(blob));
         setGenerationProgress(100);
 
-        setStep('finished');
+        setStep('result');
 
     } catch (err) {
         setError(getFriendlyErrorMessage(err));
-        setStep('upload'); 
+        setStep('welcome'); 
     }
   };
 
@@ -370,56 +411,52 @@ const App: React.FC = () => {
     setImageFiles([]);
     setLyrics('');
     setTheme('');
+    setTitle('');
     setSuggestedStyle('');
     setScenes([]);
     setFinalVideoUrl('');
     setError('');
     setStatusMessage('');
-    setStep('upload');
+    setStep('welcome');
   };
 
   const renderStep = () => {
     switch (step) {
-      case 'upload':
+      case 'welcome':
         return (
-          <div className="max-w-7xl mx-auto">
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-              {/* Left Column: Lyrics */}
-              <div className="flex flex-col space-y-4">
-                <div className="flex-grow flex flex-col p-6 bg-gray-800/50 border border-gray-700 rounded-lg">
-                  <div className="flex justify-between items-center mb-2">
-                    <label className="block text-lg font-semibold text-gray-200">{t('fileLabelLyrics')}</label>
-                    {lyrics && (
-                      <button onClick={clearGeneratedLyrics} title={t('clearLyricsTooltip')} className="text-gray-500 hover:text-red-400 transition-colors">
-                        <XIcon className="h-5 w-5" />
-                      </button>
-                    )}
-                  </div>
-                   <FileUpload
-                       label=""
-                       acceptedTypes=".txt,.lrc"
-                       file={lyricsFile}
-                       onFileChange={(file) => handleFileChange(file, 'lyrics')}
-                       Icon={UploadCloudIcon}
-                   />
-                  <textarea
-                      value={lyrics}
-                      onChange={handleLyricsChange}
-                      placeholder={t('lyricsPlaceholder')}
-                      className="flex-grow w-full bg-gray-900 border border-gray-700 rounded-lg p-4 text-gray-300 placeholder-gray-500 focus:ring-purple-500 focus:border-purple-500 mt-4 min-h-[200px]"
-                  />
+            <div className="text-center max-w-2xl mx-auto py-16">
+                <h2 className="text-3xl font-bold mb-4">{t('welcomeTitle')}</h2>
+                <p className="text-gray-400 mb-10">{t('welcomeSubtitle')}</p>
+                <div className="flex flex-col sm:flex-row gap-6 justify-center">
+                    <button onClick={() => setStep('prepareLyrics')} className="group flex-1 flex flex-col items-center justify-center p-8 bg-gray-800/50 hover:bg-purple-900/40 border border-gray-700 hover:border-purple-500 rounded-lg transition-all duration-300 transform hover:-translate-y-1">
+                        <Wand2Icon className="h-12 w-12 mb-4 text-purple-400 group-hover:text-white transition-colors" />
+                        <h3 className="text-xl font-semibold mb-2">{t('welcomeButtonAI')}</h3>
+                        <p className="text-gray-400 text-sm">{t('welcomeDescAI')}</p>
+                    </button>
+                    <button onClick={() => setStep('uploadMedia')} className="group flex-1 flex flex-col items-center justify-center p-8 bg-gray-800/50 hover:bg-pink-900/40 border border-gray-700 hover:border-pink-500 rounded-lg transition-all duration-300 transform hover:-translate-y-1">
+                        <UploadCloudIcon className="h-12 w-12 mb-4 text-pink-400 group-hover:text-white transition-colors" />
+                        <h3 className="text-xl font-semibold mb-2">{t('welcomeButtonManual')}</h3>
+                        <p className="text-gray-400 text-sm">{t('welcomeDescManual')}</p>
+                    </button>
                 </div>
-                
-                <div className="p-6 bg-gray-800/50 border border-gray-700 rounded-lg">
-                  <h2 className="text-xl font-semibold text-center mb-2 text-gray-200">{t('noLyricsTitle')}</h2>
-                  <p className="text-center text-gray-400 mb-5">{t('noLyricsSubtitle')}</p>
+            </div>
+        );
+      case 'prepareLyrics':
+        return (
+          <div className="max-w-2xl mx-auto">
+             <div className="p-6 bg-gray-800/50 border border-gray-700 rounded-lg">
+                  <div className="flex justify-between items-center">
+                     <h2 className="text-2xl font-semibold text-center mb-2 text-gray-200">{t('prepareLyricsTitle')}</h2>
+                     <button onClick={() => setStep('welcome')} className="text-gray-400 hover:text-white">&larr; {t('backButton')}</button>
+                  </div>
+                  <p className="text-center text-gray-400 mb-5">{t('prepareLyricsSubtitle')}</p>
                   <div className="flex flex-col sm:flex-row gap-3 items-center justify-center">
                     <button
                       onClick={handleGenerateTheme}
-                      disabled={isGeneratingTheme || isGeneratingLyrics}
+                      disabled={isGeneratingTitle || isGeneratingLyrics}
                       className="w-full sm:w-auto flex items-center justify-center font-semibold py-2 px-5 rounded-lg transition-all duration-300 bg-gradient-to-r from-teal-400 to-blue-500 hover:from-teal-500 hover:to-blue-600 shadow-lg hover:shadow-blue-500/50 transform hover:-translate-y-0.5 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none disabled:shadow-none"
                     >
-                      {isGeneratingTheme ? (
+                      {isGeneratingTitle ? (
                         <><ClockIcon className="h-5 w-5 mr-2 animate-spin" />{t('thinking')}</>
                       ) : (
                         <><SparklesIcon className="h-5 w-5 mr-2" />{t('aiChoice')}</>
@@ -432,7 +469,7 @@ const App: React.FC = () => {
                       onChange={(e) => { setTheme(e.target.value); setSuggestedStyle(''); }}
                       placeholder={t('themePlaceholder')}
                       className="flex-grow w-full sm:w-auto bg-gray-700 border border-gray-600 rounded-md py-2 px-4 text-white placeholder-gray-500 focus:ring-purple-500 focus:border-purple-500"
-                      disabled={isGeneratingTheme || isGeneratingLyrics}
+                      disabled={isGeneratingTitle || isGeneratingLyrics}
                     />
                   </div>
                    {suggestedStyle && (
@@ -441,7 +478,7 @@ const App: React.FC = () => {
                           <div className="flex items-center justify-center gap-3">
                             <p className="text-gray-300 text-sm italic">{suggestedStyle}</p>
                             <button onClick={handleCopyStyle} title={t('copyStyleTooltip')} className="flex-shrink-0 flex items-center text-xs py-1 px-2 bg-gray-700 hover:bg-gray-600 rounded-md transition-colors">
-                              {copySuccess ? (
+                              {styleCopySuccess ? (
                                 <><CheckIcon className="h-4 w-4 mr-1 text-green-400"/>{t('copied')}</>
                               ) : (
                                 <><ClipboardCopyIcon className="h-4 w-4 mr-1"/>{t('copy')}</>
@@ -454,21 +491,59 @@ const App: React.FC = () => {
                     <div className="mt-5 text-center">
                         <button
                           onClick={handleGenerateLyrics}
-                          disabled={isGeneratingLyrics || isGeneratingTheme}
+                          disabled={isGeneratingLyrics || isGeneratingTitle}
                           className="w-full sm:w-auto flex items-center justify-center font-semibold py-2 px-5 rounded-lg transition-all duration-300 bg-gradient-to-r from-pink-500 to-orange-400 hover:from-pink-600 hover:to-orange-500 shadow-lg hover:shadow-orange-500/50 transform hover:-translate-y-0.5 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none disabled:shadow-none"
                         >
                           {isGeneratingLyrics ? (
                             <><ClockIcon className="h-5 w-5 mr-2 animate-spin" />{t('generatingLyrics')}</>
                           ) : (
-                            <><Wand2Icon className="h-5 w-5 mr-2" />{t('generateLyricsButton')}</>
+                            <><PenSquareIcon className="h-5 w-5 mr-2" />{t('generateLyricsButton')}</>
                           )}
                         </button>
                     </div>
                   )}
+                  {lyrics && !isGeneratingLyrics && (
+                     <div className="mt-8 text-center border-t border-gray-700 pt-6">
+                        <h3 className="text-lg font-semibold text-green-400 mb-2">{t('lyricsGeneratedSuccessTitle')}</h3>
+                        <p className="text-gray-400 mb-6">{t('lyricsGeneratedSuccessDesc')}</p>
+                         <button
+                            onClick={() => setStep('uploadMedia')}
+                            className="w-full max-w-xs mx-auto flex items-center justify-center text-lg font-semibold py-3 px-6 rounded-lg transition-all duration-300 bg-gradient-to-r from-purple-500 to-pink-600 hover:from-purple-600 hover:to-pink-700 shadow-lg hover:shadow-purple-500/50 transform hover:-translate-y-1"
+                        >
+                             {t('nextStepButton')} <ArrowRightIcon className="h-5 w-5 ml-2" />
+                        </button>
+                     </div>
+                  )}
                 </div>
+          </div>
+        );
+      case 'uploadMedia':
+        return (
+          <div className="max-w-7xl mx-auto">
+              <div className="text-center mb-8">
+                <h2 className="text-3xl font-bold">{t('uploadMediaTitle')}</h2>
+                <p className="text-gray-400">{t('uploadMediaSubtitle')}</p>
+              </div>
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+              <div className="p-6 bg-gray-800/50 border border-gray-700 rounded-lg flex flex-col">
+                <label className="block text-lg font-semibold text-gray-200">{t('fileLabelLyrics')}</label>
+                 <FileUpload
+                     label=""
+                     acceptedTypes=".txt,.lrc"
+                     file={lyricsFile}
+                     onFileChange={(file) => handleFileChange(file, 'lyrics')}
+                     Icon={UploadCloudIcon}
+                 />
+                 <div className="relative flex-grow flex flex-col mt-4">
+                    <textarea
+                        value={lyrics}
+                        onChange={(e) => setLyrics(e.target.value)}
+                        placeholder={t('lyricsPlaceholder')}
+                        className="flex-grow w-full bg-gray-900 border border-gray-700 rounded-lg p-4 text-gray-300 placeholder-gray-500 focus:ring-purple-500 focus:border-purple-500 min-h-[200px]"
+                    />
+                  </div>
               </div>
 
-              {/* Right Column: Media */}
               <div className="space-y-6 p-6 bg-gray-800/50 border border-gray-700 rounded-lg">
                   <div>
                     <label className="block text-lg font-semibold text-gray-200 mb-2">{t('fileLabelAudio')}</label>
@@ -496,22 +571,24 @@ const App: React.FC = () => {
 
             <div className="mt-10 text-center">
                 <button
-                    onClick={handleStart}
-                    disabled={!audioFile || !lyrics.trim() || imageFiles.length === 0}
+                    onClick={handleGoToReview}
+                    disabled={!audioFile || !lyrics.trim() || imageFiles.length === 0 || isGeneratingTitle}
                     className="w-full max-w-sm mx-auto flex items-center justify-center text-lg font-semibold py-3 px-6 rounded-lg transition-all duration-300 bg-gradient-to-r from-purple-500 to-pink-600 hover:from-purple-600 hover:to-pink-700 shadow-lg hover:shadow-purple-500/50 transform hover:-translate-y-1 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none disabled:shadow-none"
                 >
-                    <FilmIcon className="h-6 w-6 mr-2" />
-                    {t('startGenerationButton')}
+                    {isGeneratingTitle ?
+                        <><ClockIcon className="h-6 w-6 mr-2 animate-spin" /> {t('statusGeneratingTitle')}</> :
+                        <>{t('reviewScenesButton')} <ArrowRightIcon className="h-5 w-5 ml-2" /></>
+                    }
                 </button>
             </div>
           </div>
         );
-      case 'lyrics':
-        return <LyricsDisplay scenes={scenes} setScenes={setScenes} onContinue={handleGenerate} onBack={() => setStep('upload')} statusMessage={statusMessage} />;
+      case 'review':
+        return <LyricsDisplay title={title} scenes={scenes} setScenes={setScenes} onContinue={handleGenerate} onBack={() => setStep('uploadMedia')} statusMessage={statusMessage} onRegeneratePrompt={handleRegeneratePrompt} />;
       case 'generating':
-        return <Loader statusMessage={statusMessage} progress={generationProgress} scenes={scenes} />;
-      case 'finished':
-        return <VideoResult videoUrl={finalVideoUrl} onRestart={handleRestart} />;
+        return <Loader title={title} statusMessage={statusMessage} progress={generationProgress} scenes={scenes} />;
+      case 'result':
+        return <VideoResult title={title} videoUrl={finalVideoUrl} onRestart={handleRestart} />;
       default:
         return null;
     }
@@ -534,8 +611,15 @@ const App: React.FC = () => {
                  </div>
                  <p className="mt-3 text-gray-400 max-w-2xl">{t('appSubtitle')}</p>
              </div>
-             <div className="flex gap-2 flex-shrink-0">
-               <button
+             <div className="flex gap-2 flex-shrink-0 items-center">
+                <button
+                  onClick={() => setIsSettingsOpen(true)}
+                  className="p-2 rounded-md text-sm font-semibold transition-colors bg-gray-700 hover:bg-gray-600"
+                  title={t('settingsTitle')}
+                >
+                  <SettingsIcon className="h-5 w-5" />
+                </button>
+                <button
                  onClick={() => setLanguage('ja')}
                  className={`py-2 px-4 rounded-md text-sm font-semibold transition-colors ${
                    language === 'ja'
@@ -567,6 +651,12 @@ const App: React.FC = () => {
        <footer className="text-center mt-12 text-sm text-gray-500">
           <p>{t('footerPoweredBy')}</p>
       </footer>
+      <SettingsModal
+        isOpen={isSettingsOpen}
+        onClose={() => setIsSettingsOpen(false)}
+        delay={delay}
+        setDelay={setDelay}
+      />
     </div>
   );
 };

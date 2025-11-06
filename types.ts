@@ -6,4 +6,5 @@ export interface Scene {
   videoUrl?: string;
   status: 'pending' | 'generating' | 'completed' | 'failed';
   error?: string;
+  lipSync: boolean;
 }

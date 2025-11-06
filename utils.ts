@@ -1,4 +1,5 @@
 import { GoogleGenAI, Type } from '@google/genai';
+import { Scene } from './types';
 
 interface ParsedScene {
   lyric: string;
@@ -9,12 +10,42 @@ export interface ThemeSuggestion {
   style: string;
 }
 
+const robustJsonParse = (jsonString: string) => {
+  let cleanJsonString = jsonString.trim();
+  if (cleanJsonString.startsWith('```json')) {
+    cleanJsonString = cleanJsonString.substring(7, cleanJsonString.length - 3).trim();
+  } else if (cleanJsonString.startsWith('```')) {
+    cleanJsonString = cleanJsonString.substring(3, cleanJsonString.length - 3).trim();
+  }
+  return JSON.parse(cleanJsonString);
+};
+
 export const parseLyrics = (lyrics: string): ParsedScene[] => {
   return lyrics
     .split('\n')
     .map(line => line.trim())
     .filter(line => line.length > 0 && !line.match(/^\[.*\]$/)) // Remove empty lines and headers like [Verse]
     .map(lyric => ({ lyric }));
+};
+
+export const generateTitleFromLyrics = async (ai: GoogleGenAI, lyrics: string, language: 'ja' | 'en'): Promise<string> => {
+  const langInstruction = language === 'ja' ? 'Japanese' : 'English';
+  const systemInstruction = `You are an expert at analyzing song lyrics. Your task is to read the provided lyrics and distill their core theme into a short, compelling song title. The title should be in ${langInstruction}. Respond with only the title text, without any extra formatting or quotation marks.`;
+  const contents = `Based on these lyrics, what is a good song title?\n\nLyrics:\n${lyrics}`;
+
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents,
+      config: {
+        systemInstruction,
+      },
+    });
+    return response.text.trim().replace(/"/g, ''); // Clean up quotes
+  } catch (error) {
+    console.error("Error generating title from lyrics:", error);
+    return language === 'ja' ? '無題のプロジェクト' : 'Untitled Project'; // Fallback title
+  }
 };
 
 export const generateRandomThemeAndStyle = async (ai: GoogleGenAI, language: 'ja' | 'en'): Promise<ThemeSuggestion> => {
@@ -50,8 +81,7 @@ export const generateRandomThemeAndStyle = async (ai: GoogleGenAI, language: 'ja
       },
     });
 
-    const jsonStr = response.text.trim();
-    const suggestions: ThemeSuggestion[] = JSON.parse(jsonStr);
+    const suggestions: ThemeSuggestion[] = robustJsonParse(response.text);
     
     if (!suggestions || suggestions.length === 0) {
       throw new Error("Could not generate theme suggestions.");
@@ -88,16 +118,25 @@ export const generateLyricsFromTheme = async (ai: GoogleGenAI, theme: string, la
   }
 };
 
-export const generatePromptsFromLyrics = async (ai: GoogleGenAI, lyrics: string[]): Promise<string[]> => {
-  const systemInstruction = `You are an expert music video director. For each line of lyrics provided, create a short, vivid, and cinematic prompt for an AI video generation model. The prompt should be in English. Focus on visual storytelling, emotion, and dynamic imagery that complements the lyric. Do not refer to the lyric itself in the prompt. Describe a scene.
+export const generatePromptsForScenes = async (ai: GoogleGenAI, scenes: Pick<Scene, 'lyric' | 'lipSync'>[], title: string): Promise<string[]> => {
+    const systemInstruction = `You are an expert music video director creating a video for a song with the title: "${title}". For each lyric object provided, create a short, vivid, and cinematic prompt in English for an AI video generation model.
 
-Example:
-Lyric: "Chasing neon dreams through the city rain"
-Prompt: "A lone figure in a glowing raincoat runs down a glistening, rain-slicked city street at night, surrounded by vibrant, blurry neon signs reflecting in the puddles."
+- If 'lipSync' is true, the prompt MUST focus on an extreme close-up of a character's face, showing emotion and clearly singing the lyric. Describe the mouth shape and expression.
+- If 'lipSync' is false, create a wider, more atmospheric cinematic shot that captures the feeling of the lyric without focusing on a singing face.
+- Do not refer to the lyric itself in the prompt.
 
-Provide only the list of prompts as a JSON array of strings, like ["prompt 1", "prompt 2", ...].`;
+Example for lipSync: true
+Lyric: "I'm walking on sunshine"
+Prompt: "Extreme close-up on a joyful singer's face, bathed in golden sunlight, mouth open mid-song, eyes sparkling with happiness."
 
-  const contents = `Generate video prompts for the following lyrics:\n\n${lyrics.join('\n')}`;
+Example for lipSync: false
+Lyric: "I'm walking on sunshine"
+Prompt: "Wide shot of a figure walking through a field of sunflowers at sunrise, lens flare washing over the scene."
+
+Provide only the list of prompts as a JSON array of strings.`;
+
+  const sceneData = scenes.map(s => ({ lyric: s.lyric, lipSync: s.lipSync }));
+  const contents = `Generate video prompts for the following lyric objects:\n\n${JSON.stringify(sceneData, null, 2)}`;
 
   try {
     const response = await ai.models.generateContent({
@@ -106,25 +145,26 @@ Provide only the list of prompts as a JSON array of strings, like ["prompt 1", "
       config: {
         systemInstruction,
         responseMimeType: 'application/json',
+        responseSchema: {
+            type: Type.ARRAY,
+            items: {
+                type: Type.STRING,
+                description: "A cinematic prompt for the AI video generation model."
+            }
+        }
       },
     });
 
-    const text = response.text.trim();
-    // Handle potential markdown code blocks
-    const jsonStr = text.startsWith('```json') ? text.substring(7, text.length - 3).trim() : text;
-    
-    const prompts = JSON.parse(jsonStr);
+    const prompts = robustJsonParse(response.text);
 
-    if (Array.isArray(prompts) && prompts.length === lyrics.length) {
+    if (Array.isArray(prompts) && prompts.length === scenes.length) {
       return prompts;
     } else {
-      console.warn("Mismatched prompt count, falling back to simple prompts.");
-      // Fallback for cases where the model doesn't return the expected structure
-      return lyrics.map(lyric => `A beautiful cinematic shot representing the lyric: "${lyric}"`);
+      console.warn("Mismatched prompt count, falling back to simple prompts.", { expected: scenes.length, got: prompts.length });
+      return scenes.map(s => `A beautiful cinematic shot representing the lyric: "${s.lyric}"`);
     }
   } catch (error) {
     console.error("Error generating prompts from lyrics:", error);
-    // Fallback to simple prompts if API fails or JSON parsing fails
-    return lyrics.map(lyric => `A cinematic video representing: ${lyric}`);
+    return scenes.map(s => `A cinematic video representing: ${s.lyric}`);
   }
 };

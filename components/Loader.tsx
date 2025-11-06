@@ -1,15 +1,16 @@
 import React from 'react';
 import { Scene } from '../types';
-import { ClockIcon, PackageCheckIcon, StopCircleIcon, FilmIcon, Wand2Icon } from './Icons';
+import { ClockIcon, PackageCheckIcon, StopCircleIcon, FilmIcon, Wand2Icon, ClapperboardIcon } from './Icons';
 import { useI18n } from '../i18n';
 
 interface LoaderProps {
+  title: string;
   statusMessage: string;
   progress: number;
   scenes: Scene[];
 }
 
-const Loader: React.FC<LoaderProps> = ({ statusMessage, progress, scenes }) => {
+const Loader: React.FC<LoaderProps> = ({ title, statusMessage, progress, scenes }) => {
   const { t } = useI18n();
   const getStatusIcon = (status: Scene['status']) => {
     switch (status) {
@@ -27,10 +28,16 @@ const Loader: React.FC<LoaderProps> = ({ statusMessage, progress, scenes }) => {
 
   return (
     <div className="flex flex-col items-center justify-center h-full max-w-3xl mx-auto py-10">
-      <div className="flex items-center text-purple-400 mb-6">
+      <div className="flex items-center text-purple-400 mb-2">
         <Wand2Icon className="h-10 w-10 mr-4 animate-pulse" />
         <h2 className="text-3xl font-bold">{t('loaderTitle')}</h2>
       </div>
+       {title && (
+        <div className="flex items-center gap-2 text-gray-400 mb-6">
+            <ClapperboardIcon className="h-5 w-5" />
+            <h3 className="text-lg font-medium">{title}</h3>
+        </div>
+      )}
       <p className="text-gray-400 mb-8 text-center">
         {t('loaderSubtitle')}
       </p>
